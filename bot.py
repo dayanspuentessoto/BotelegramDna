@@ -75,10 +75,29 @@ async def modo_noche(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 until_date=until_time
             )
             await update.message.reply_text(f"⛔ {update.message.from_user.first_name}, no se permite enviar mensajes hasta las 08:00")
-        except Exception as e:
-            print(f"Error al restringir al usuario {user_id}: {e}")
+        except:
+            pass
     else:
         estado_modo_noche[chat.id]["modo_noche_avisado"] = False
+
+# ===========================
+# Aviso fin de modo noche
+# ===========================
+async def aviso_fin_modo_noche(app: Application):
+    global modo_dia_avisado
+    while True:
+        now = datetime.now()
+        if now.hour == HORA_FIN_NOCHE and not modo_dia_avisado:
+            # Buscar chat GENERAL en los updates recientes
+            for chat_data in await app.bot.get_updates():
+                if hasattr(chat_data, 'message'):
+                    chat = chat_data.message.chat
+                    if chat.title == GRUPO_GENERAL:
+                        await app.bot.send_message(chat_id=chat.id, text="☀️ El modo noche ha terminado. ¡Ya puedes enviar mensajes! 😎")
+                        modo_dia_avisado = True
+        elif now.hour != HORA_FIN_NOCHE:
+            modo_dia_avisado = False
+        await asyncio.sleep(60)  # Revisa cada minuto
 
 # ===========================
 # Filtrar mensajes por tema
@@ -91,25 +110,6 @@ async def filtrar_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             # El bot puede interactuar en el tema 'General' u otros temas abiertos
             pass
-
-# ===========================
-# Aviso fin de modo noche
-# ===========================
-async def aviso_fin_modo_noche(app: Application):
-    while True:
-        now = datetime.now()
-        if now.hour == HORA_FIN_NOCHE:
-            for chat_id, estado in estado_modo_noche.items():
-                if not estado["modo_dia_avisado"]:
-                    try:
-                        await app.bot.send_message(chat_id=chat_id, text="☀️ El modo noche ha terminado. ¡Ya puedes enviar mensajes! 😎")
-                        estado_modo_noche[chat_id]["modo_dia_avisado"] = True
-                    except Exception as e:
-                        print(f"Error al enviar mensaje de fin de modo noche al chat {chat_id}: {e}")
-        elif now.hour != HORA_FIN_NOCHE:
-            for estado in estado_modo_noche.values():
-                estado["modo_dia_avisado"] = False
-        await asyncio.sleep(60)  # Revisa cada minuto
 
 # ===========================
 # Inicialización del bot
