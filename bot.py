@@ -6,22 +6,22 @@ import asyncio
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# Nombre del canal GENERAL
 GRUPO_GENERAL = "GENERAL"
 
 REGLAS = "- Ser siempre amables con todos los integrantes.\n- Pedir las cosas con respeto."
 
-# Horas del modo noche
 HORA_INICIO_NOCHE = 23
 HORA_FIN_NOCHE = 8
 
 modo_noche_avisado = False
 modo_dia_avisado = False
-job_running = False  # Variable para verificar si la tarea está en ejecución
 
-# ===========================
+# Bandera para controlar la ejecución de la tarea de aviso de fin de modo noche
+tarea_en_ejecucion = False
+
+# ============================
 # Bienvenida
-# ===========================
+# ============================
 async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for usuario in update.message.new_chat_members:
         chat = update.message.chat
@@ -29,9 +29,9 @@ async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
             mensaje = f"👋🎉 {usuario.first_name} BIENVENIDO(A) A NUESTRO SELECTO GRUPO, MANTENTE SIEMPRE AL DIA Y ACTUALIZADO 😎🤖\n\nReglas del grupo:\n{REGLAS}"
             await update.message.reply_text(mensaje)
 
-# ===========================
+# ============================
 # Despedida
-# ===========================
+# ============================
 async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usuario = update.message.left_chat_member
     chat = update.message.chat
@@ -39,9 +39,9 @@ async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mensaje = f"👋 CHAO {usuario.first_name}, DESPUÉS NO PIDAS AYUDA 🤷🏻‍♂️"
         await update.message.reply_text(mensaje)
 
-# ===========================
+# ============================
 # Modo noche
-# ===========================
+# ============================
 async def modo_noche(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global modo_noche_avisado
     now = datetime.now()
@@ -69,108 +69,86 @@ async def modo_noche(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         modo_noche_avisado = False
 
-# ===========================
+# ============================
 # Aviso fin de modo noche
-# ===========================
+# ============================
 async def aviso_fin_modo_noche(app: Application):
-    global modo_dia_avisado, job_running
-    if job_running:
-        return  # Evita que se ejecute si ya está corriendo
+    global modo_dia_avisado
+    global tarea_en_ejecucion
 
-    job_running = True  # Marca que la tarea está en ejecución
+    if tarea_en_ejecucion:
+        return  # Si la tarea ya está en ejecución, no la ejecutamos nuevamente
 
+    tarea_en_ejecucion = True  # Marcamos la tarea como en ejecución
     try:
-        now = datetime.now()
-        if now.hour == HORA_FIN_NOCHE and not modo_dia_avisado:
-            # Buscar chat GENERAL en los updates recientes
-            for chat_data in await app.bot.get_updates():
-                if hasattr(chat_data, 'message'):
-                    chat = chat_data.message.chat
-                    if chat.title == GRUPO_GENERAL:
-                        await app.bot.send_message(chat_id=chat.id, text="☀️ El modo noche ha terminado. ¡Ya puedes enviar mensajes! 😎")
-                        modo_dia_avisado = True
-        elif now.hour != HORA_FIN_NOCHE:
-            modo_dia_avisado = False
-        await asyncio.sleep(60)  # Revisa cada minuto
+        while True:
+            now = datetime.now()
+            if now.hour == HORA_FIN_NOCHE and not modo_dia_avisado:
+                for chat_data in await app.bot.get_updates():
+                    if hasattr(chat_data, 'message'):
+                        chat = chat_data.message.chat
+                        if chat.title == GRUPO_GENERAL:
+                            await app.bot.send_message(chat_id=chat.id, text="☀️ El modo noche ha terminado. ¡Ya puedes enviar mensajes! 😎")
+                            modo_dia_avisado = True
+            elif now.hour != HORA_FIN_NOCHE:
+                modo_dia_avisado = False
+            await asyncio.sleep(60)  # Revisa cada minuto
     finally:
-        job_running = False  # Marca que la tarea ha finalizado
+        tarea_en_ejecucion = False  # Marcamos la tarea como no en ejecución cuando termina
 
-# ===========================
-# Responder mensajes en el grupo
-# ===========================
-async def responder_mensaje_grupo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text.lower()  # Captura el texto de la persona que le habla al bot
-    user_name = update.message.from_user.first_name  # Nombre del usuario
-
+# ============================
+# Respuesta en privado
+# ============================
+async def respuesta_privada(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    usuario = update.message.from_user
     now = datetime.now()
 
-    if user_message == "ayuda":
-        # Respuesta al comando ayuda
-        await update.message.reply_text(
-            "En un momento te atenderá el administrador, mientras tanto verifica el tema ACTUALIZACIONES DE APPS GRATUITAS, puede que encuentres lo que buscas"
-        )
-    elif user_message in ["hola", "buenas", "buenas tardes", "buenos días"]:
-        # Responde con saludo dependiendo de la hora
-        if now.hour < 12:
-            greeting = "Buenos días"
-        elif now.hour < 18:
-            greeting = "Buenas tardes"
-        else:
-            greeting = "Buenas noches"
-
-        await update.message.reply_text(f"Hola {greeting}, si necesitas ayuda, escribe la palabra ayuda.")
+    # Saludo con buenos días o buenas tardes
+    if now.hour < 12:
+        saludo = "¡Buenos días!"
     else:
-        # Responde con un mensaje indicando que deben escribir "ayuda"
-        await update.message.reply_text(
-            f"Hola {user_name}, si necesitas ayuda, por favor escribe la palabra *ayuda*."
-        )
+        saludo = "¡Buenas tardes!"
 
-# ===========================
-# Responder mensajes privados
-# ===========================
-async def responder_mensaje_privado(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text.lower()  # Captura el texto de la persona que le habla al bot
-    user_name = update.message.from_user.first_name  # Nombre del usuario
+    # Respuesta indicando que es un bot
+    mensaje = f"{saludo} Soy un bot y no tengo todas las respuestas. Si necesitas ayuda, por favor contacta con el administrador."
+    await update.message.reply_text(mensaje)
 
-    now = datetime.now()
+# ============================
+# Respuesta en grupo
+# ============================
+async def respuesta_grupo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    usuario = update.message.from_user
+    mensaje = update.message.text.lower()
 
-    if user_message == "ayuda":
-        # Respuesta al comando ayuda
-        await update.message.reply_text(
-            "En un momento te atenderá el administrador, mientras tanto verifica el tema ACTUALIZACIONES DE APPS GRATUITAS, puede que encuentres lo que buscas"
-        )
-    elif user_message in ["hola", "buenas", "buenas tardes", "buenos días"]:
-        # Responde con saludo dependiendo de la hora
-        if now.hour < 12:
-            greeting = "Buenos días"
-        elif now.hour < 18:
-            greeting = "Buenas tardes"
-        else:
-            greeting = "Buenas noches"
-
-        await update.message.reply_text(f"Hola {greeting}, soy un bot, no tengo todas las respuestas, por favor contacta con el administrador.")
+    # Saludo con buenos días o buenas tardes en función de la hora
+    if datetime.now().hour < 12:
+        saludo = "¡Buenos días!"
     else:
-        # Respuesta para cualquier otro mensaje
-        await update.message.reply_text(
-            f"Hola {user_name}, soy un bot, no tengo todas las respuestas, por favor contacta con el administrador."
-        )
+        saludo = "¡Buenas tardes!"
 
-# ===========================
+    # Si no es "ayuda", responde pidiendo que escriban "ayuda"
+    if mensaje != "ayuda":
+        await update.message.reply_text(f"{saludo} Si necesitas ayuda, escribe la palabra 'ayuda'.")
+    else:
+        # Si el mensaje es "ayuda", indica que el administrador atenderá pronto
+        await update.message.reply_text("En un momento te atenderá el administrador, mientras tanto verifica el tema ACTUALIZACIONES DE APPS GRATUITAS, puede que encuentres lo que buscas")
+
+# ============================
 # Inicialización del bot
-# ===========================
+# ============================
 def main():
     app = Application.builder().token(TOKEN).build()
 
-    # Handlers para GENERAL (grupo)
+    # Handlers para GENERAL
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, bienvenida))
     app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, despedida))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.StatusUpdate.ALL, modo_noche))
 
-    # Handler para mensajes privados
-    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, responder_mensaje_privado))
+    # Respuesta en privado
+    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, respuesta_privada))
 
-    # Handler para mensajes en el grupo
-    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.GROUP, responder_mensaje_grupo))
+    # Respuesta en grupo
+    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.GROUP, respuesta_grupo))
 
     # Tarea programada para avisar fin de modo noche
     app.job_queue.run_repeating(lambda ctx: asyncio.create_task(aviso_fin_modo_noche(app)), interval=60, first=0)
