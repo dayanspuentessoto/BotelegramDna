@@ -1,15 +1,13 @@
 import os
 from telegram import Update, ChatPermissions
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
-from dotenv import load_dotenv
-from datetime import datetime, time, timedelta
 import asyncio
 
-# Cargar las variables de entorno desde el archivo .env (asegúrate de instalar python-dotenv)
-load_dotenv()
-
-# Obtener el token de la variable de entorno
+# Obtener el token de la variable de entorno que ya está configurada en Railway
 TOKEN = os.getenv("TELEGRAM_TOKEN")
+
+if not TOKEN:
+    raise ValueError("El token de Telegram no se ha configurado correctamente.")
 
 # Nombre del grupo
 GRUPO_GENERAL = "D.N.A. TV"
