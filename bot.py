@@ -5,6 +5,8 @@ from telegram import Update, ChatPermissions
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
+PORT = int(os.environ.get('PORT', '8080'))
+WEBHOOK_PATH = f"/webhook/{TOKEN[:10]}"  # Un path privado por seguridad básica
 
 GRUPO_NOMBRE = "D.N.A. TV"
 CANAL_GENERAL = "General"
@@ -16,15 +18,11 @@ modo_noche_avisado = False
 modo_dia_avisado = False
 
 def es_general(update: Update):
-    """Verifica que el mensaje sea en el canal General del grupo D.N.A. TV."""
     chat = update.message.chat
     return getattr(chat, "title", None) == CANAL_GENERAL and chat.type in ["supergroup", "group"]
 
-# ===========================
-# Bienvenida a nuevos miembros en General
-# ===========================
 async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("Handler: bienvenida")  # DEPURACIÓN
+    print("Handler: bienvenida")
     if not es_general(update):
         return
     for usuario in update.message.new_chat_members:
@@ -34,23 +32,17 @@ async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(mensaje)
 
-# ===========================
-# Despedida a miembros que salen de General
-# ===========================
 async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("Handler: despedida")  # DEPURACIÓN
+    print("Handler: despedida")
     if not es_general(update):
         return
     usuario = update.message.left_chat_member
     mensaje = f"👋 CHAO {usuario.first_name}, DESPUÉS NO PIDAS AYUDA 🤷🏻‍♂️"
     await update.message.reply_text(mensaje)
 
-# ===========================
-# Modo noche en General
-# ===========================
 async def modo_noche(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global modo_noche_avisado
-    print("Handler: modo_noche")  # DEPURACIÓN
+    print("Handler: modo_noche")
     if not es_general(update):
         return
     now = datetime.now()
@@ -74,16 +66,12 @@ async def modo_noche(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         modo_noche_avisado = False
 
-# ===========================
-# Aviso fin de modo noche en General
-# ===========================
 async def aviso_fin_modo_noche(context: ContextTypes.DEFAULT_TYPE):
     global modo_dia_avisado
-    print("Job: aviso_fin_modo_noche")  # DEPURACIÓN
+    print("Job: aviso_fin_modo_noche")
     app = context.application
     now = datetime.now()
     if now.hour == HORA_FIN_NOCHE and not modo_dia_avisado:
-        # Busca el chat "General" en los últimos updates
         for update in await app.bot.get_updates():
             if hasattr(update, 'message'):
                 chat = update.message.chat
@@ -94,11 +82,8 @@ async def aviso_fin_modo_noche(context: ContextTypes.DEFAULT_TYPE):
     elif now.hour != HORA_FIN_NOCHE:
         modo_dia_avisado = False
 
-# ===========================
-# Saludo por hora y sugerencia de ayuda en General
-# ===========================
 async def saludo_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("Handler: saludo_general")  # DEPURACIÓN
+    print("Handler: saludo_general")
     if not es_general(update):
         return
     now = datetime.now()
@@ -107,64 +92,45 @@ async def saludo_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{saludo} Soy el bot del canal General de D.N.A. TV. Si necesitas recomendación, escribe 'ayuda'."
     )
 
-# ===========================
-# Responde recomendación en General cuando escriben "ayuda"
-# ===========================
 async def ayuda_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("Handler: ayuda_general")  # DEPURACIÓN
+    print("Handler: ayuda_general")
     if not es_general(update):
         return
     await update.message.reply_text(
         "En un momento te atenderá el administrador, mientras tanto verifica el tema ACTUALIZACIONES DE APPS GRATUITAS, puede que encuentres lo que buscas."
     )
 
-# ===========================
-# Saludo en privado y aclaración que es un bot
-# ===========================
 async def saludo_privado(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("Handler: saludo_privado (mensaje privado recibido)", update.message)  # DEPURACIÓN
+    print("Handler: saludo_privado (mensaje privado recibido)", update.message)
     now = datetime.now()
     saludo = "¡Buenos días!" if now.hour < 12 else "¡Buenas tardes!"
     await update.message.reply_text(
         f"{saludo} Soy un bot, no tengo todas las respuestas. Si necesitas ayuda, por favor contáctate con el administrador."
     )
 
-# ===========================
-# Inicialización del bot
-# ===========================
 def main():
     app = Application.builder().token(TOKEN).build()
-
-    # Compila la expresión regular con ignorecase
     regex_ayuda = re.compile(r'^ayuda$', re.IGNORECASE)
 
-    # 1. Saludo en privado (PRIORIDAD MÁXIMA)
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE, saludo_privado))
-
-    # 2. Bienvenida y despedida en General
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, bienvenida))
     app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, despedida))
-
-    # 3. Modo noche en General
     app.add_handler(MessageHandler(filters.TEXT & ~filters.StatusUpdate.ALL, modo_noche))
-
-    # 4. Mensaje "ayuda" en General
-    app.add_handler(MessageHandler(
-        filters.TEXT & filters.Regex(regex_ayuda),
-        ayuda_general
-    ))
-
-    # 5. Saludo general en General (para cualquier otro texto)
-    app.add_handler(MessageHandler(
-        filters.TEXT,
-        saludo_general
-    ))
-
-    # Job programado para aviso fin de modo noche
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(regex_ayuda), ayuda_general))
+    app.add_handler(MessageHandler(filters.TEXT, saludo_general))
     app.job_queue.run_repeating(aviso_fin_modo_noche, interval=60, first=0)
 
-    print("🤖 Bot en ejecución...")
-    app.run_polling()
+    # ---------- WEBHOOK CONFIG ----------
+    url_base = os.environ.get('WEBHOOK_BASE', '')
+    webhook_url = f"{url_base}{WEBHOOK_PATH}"
+    print(f"Usando webhook URL: {webhook_url}")
+
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        webhook_url=webhook_url,
+        webhook_path=WEBHOOK_PATH
+    )
 
 if __name__ == "__main__":
     main()
