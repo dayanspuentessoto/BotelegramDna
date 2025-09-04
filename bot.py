@@ -1,19 +1,17 @@
-import os
 from telegram import Update, ChatPermissions
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, MessageHandler, filters, ContextTypes, CallbackContext
+import os
+from datetime import datetime, time, timedelta
 import asyncio
 
-# Obtener el token de la variable de entorno que ya está configurada en Railway
+# Obtención del token desde las variables de entorno
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 if not TOKEN:
     raise ValueError("El token de Telegram no se ha configurado correctamente.")
 
-# Nombre del grupo
+# Nombre del canal GENERAL
 GRUPO_GENERAL = "D.N.A. TV"
-
-# Nombres de los temas
-TEMAS_CERRADOS = ["ACTUALIZACIONES DE APPS GRATUITAS", "Información aplicación de pago"]
 
 REGLAS = "- Ser siempre amables con todos los integrantes.\n- Pedir las cosas con respeto."
 
@@ -21,8 +19,8 @@ REGLAS = "- Ser siempre amables con todos los integrantes.\n- Pedir las cosas co
 HORA_INICIO_NOCHE = 23
 HORA_FIN_NOCHE = 8
 
-# Diccionario para gestionar el estado de los avisos de modo noche/día
-estado_modo_noche = {}
+modo_noche_avisado = False
+modo_dia_avisado = False
 
 # ===========================
 # Bienvenida
@@ -48,27 +46,23 @@ async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Modo noche
 # ===========================
 async def modo_noche(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global modo_noche_avisado
+    now = datetime.now()
     chat = update.message.chat
+
     if chat.title != GRUPO_GENERAL:
         return
 
-    now = datetime.now()
-    user_id = update.message.from_user.id
-
-    # Inicializa el estado del chat si no existe
-    if chat.id not in estado_modo_noche:
-        estado_modo_noche[chat.id] = {"modo_noche_avisado": False, "modo_dia_avisado": False}
-
     if now.hour >= HORA_INICIO_NOCHE or now.hour < HORA_FIN_NOCHE:
-        if not estado_modo_noche[chat.id]["modo_noche_avisado"]:
+        if not modo_noche_avisado:
             await update.message.reply_text("🌙 El grupo ha entrado en MODO NOCHE: no se podrán enviar mensajes hasta las 08:00")
-            estado_modo_noche[chat.id]["modo_noche_avisado"] = True
+            modo_noche_avisado = True
 
         until_time = datetime.combine(now.date(), time(HORA_FIN_NOCHE)) + timedelta(days=1 if now.hour >= HORA_INICIO_NOCHE else 0)
         try:
             await context.bot.restrict_chat_member(
                 chat_id=chat.id,
-                user_id=user_id,
+                user_id=update.message.from_user.id,
                 permissions=ChatPermissions(can_send_messages=False),
                 until_date=until_time
             )
@@ -76,7 +70,7 @@ async def modo_noche(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
     else:
-        estado_modo_noche[chat.id]["modo_noche_avisado"] = False
+        modo_noche_avisado = False
 
 # ===========================
 # Aviso fin de modo noche
@@ -98,18 +92,6 @@ async def aviso_fin_modo_noche(app: Application):
         await asyncio.sleep(60)  # Revisa cada minuto
 
 # ===========================
-# Filtrar mensajes por tema
-# ===========================
-async def filtrar_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.message.chat
-    if chat.title == GRUPO_GENERAL:  # Solo permite mensajes en el grupo "D.N.A. TV"
-        if update.message.chat.title in TEMAS_CERRADOS:
-            await update.message.delete()  # Elimina el mensaje en los temas cerrados
-        else:
-            # El bot puede interactuar en el tema 'General' u otros temas abiertos
-            pass
-
-# ===========================
 # Inicialización del bot
 # ===========================
 def main():
@@ -118,7 +100,6 @@ def main():
     # Handlers para GENERAL
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, bienvenida))
     app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, despedida))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.StatusUpdate.ALL, filtrar_mensajes))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.StatusUpdate.ALL, modo_noche))
 
     # Tarea programada para avisar fin de modo noche
