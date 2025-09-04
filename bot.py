@@ -18,9 +18,8 @@ modo_dia_avisado = False
 def es_general(update: Update):
     """Verifica que el mensaje sea en el canal General del grupo D.N.A. TV."""
     chat = update.message.chat
-    # Asegúrate que el nombre sea "General" y el grupo sea "D.N.A. TV"
-    # chat.title es el nombre visible del grupo/canal
-    return chat.title == CANAL_GENERAL and getattr(chat, "supergroup", True)
+    # Asegúrate que el nombre sea "General" y el grupo sea supergrupo
+    return getattr(chat, "title", None) == CANAL_GENERAL and chat.type in ["supergroup", "group"]
 
 # ===========================
 # Bienvenida a nuevos miembros en General
@@ -85,7 +84,7 @@ async def aviso_fin_modo_noche(context: ContextTypes.DEFAULT_TYPE):
         for update in await app.bot.get_updates():
             if hasattr(update, 'message'):
                 chat = update.message.chat
-                if chat.title == CANAL_GENERAL and getattr(chat, "supergroup", True):
+                if getattr(chat, "title", None) == CANAL_GENERAL and chat.type in ["supergroup", "group"]:
                     await app.bot.send_message(chat_id=chat.id,
                         text="☀️ El modo noche ha terminado. ¡Ya puedes enviar mensajes! 😎")
                     modo_dia_avisado = True
@@ -130,6 +129,9 @@ async def saludo_privado(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TOKEN).build()
 
+    # Compila la expresión regular con ignorecase
+    regex_ayuda = re.compile(r'^ayuda$', re.IGNORECASE)
+
     # Bienvenida y despedida en General
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, bienvenida))
     app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, despedida))
@@ -137,9 +139,15 @@ def main():
     # Modo noche en General
     app.add_handler(MessageHandler(filters.TEXT & ~filters.StatusUpdate.ALL, modo_noche))
 
+    # Saludo en privado (debe ir antes del saludo general)
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.ChatType.PRIVATE,
+        saludo_privado
+    ))
+
     # Mensaje "ayuda" en General
     app.add_handler(MessageHandler(
-        filters.TEXT & filters.Regex(r'^ayuda$', flags=re.IGNORECASE),
+        filters.TEXT & filters.Regex(regex_ayuda),
         ayuda_general
     ))
 
@@ -147,12 +155,6 @@ def main():
     app.add_handler(MessageHandler(
         filters.TEXT,
         saludo_general
-    ))
-
-    # Saludo en privado
-    app.add_handler(MessageHandler(
-        filters.TEXT & filters.ChatType.PRIVATE,
-        saludo_privado
     ))
 
     # Job programado para aviso fin de modo noche
