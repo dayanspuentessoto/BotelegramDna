@@ -139,7 +139,7 @@ def main():
 
     # Mensaje "ayuda" en General
     app.add_handler(MessageHandler(
-        filters.TEXT & filters.Regex(r'^ayuda$', re.IGNORECASE),
+        filters.TEXT & filters.Regex(r'^ayuda$', flags=re.IGNORECASE),
         ayuda_general
     ))
 
