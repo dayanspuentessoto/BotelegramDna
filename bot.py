@@ -122,22 +122,36 @@ def extraer_cartelera_deportiva():
     tz = ZoneInfo("America/Santiago")
     hoy = datetime.now(tz).date()
     manana = hoy + timedelta(days=1)
-    dias_a_incluir = {hoy.strftime('%d-%m-%Y'), manana.strftime('%d-%m-%Y')}
+    meses = {
+        1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+        7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
+    }
+    def formatea_fecha(dt):
+        return f"{dt.day} de {meses[dt.month]}"
+    dias_a_incluir = {formatea_fecha(hoy), formatea_fecha(manana)}
     try:
         resp = requests.get(URL_CARTELERA, timeout=10)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
-        tabla = soup.find("table")
-        if not tabla:
-            return "No se encontró la cartelera deportiva."
+
         eventos = []
-        for row in tabla.find_all("tr"):
-            cols = [c.get_text(strip=True) for c in row.find_all("td")]
-            if len(cols) != 4:
-                continue
-            fecha, hora, evento, canal = cols
-            if fecha in dias_a_incluir:
-                eventos.append(f"📅 {fecha} 🕒 {hora}\n🏟️ {evento}\n📺 CANAL: {canal.upper()}")
+        bloques_fecha = soup.find_all("div", class_="cartelera_fecha")
+        for bloque_fecha in bloques_fecha:
+            fecha_texto = bloque_fecha.get_text(strip=True)
+            if any(dia in fecha_texto for dia in dias_a_incluir):
+                bloque_eventos = bloque_fecha.find_next_sibling("div", class_="cartelera_eventos")
+                for evento in bloque_eventos.find_all("div", class_="cartelera_evento"):
+                    hora = evento.find("div", class_="cartelera_hora")
+                    nombre = evento.find("div", class_="cartelera_nombre")
+                    canal = evento.find("div", class_="cartelera_canal")
+                    logo = evento.find("img")
+                    logo_txt = logo["alt"] if logo and logo.has_attr("alt") else ""
+                    canal_txt = canal.get_text(strip=True) if canal else ""
+                    eventos.append(
+                        f"📅 {fecha_texto}\n🕒 {hora.get_text(strip=True) if hora else ''}\n"
+                        f"🏟️ {nombre.get_text(strip=True) if nombre else ''}\n"
+                        f"📺 Canal: {canal_txt} ({logo_txt})"
+                    )
         return "\n\n".join(eventos) if eventos else "No hay eventos deportivos programados para hoy y mañana."
     except Exception as e:
         print(f"Error extrayendo cartelera deportiva: {e}")
