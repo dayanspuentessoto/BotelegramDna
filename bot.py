@@ -9,9 +9,8 @@ from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandl
 
 # --- CONFIGURACIÓN ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GENERAL_CHAT_ID = "-2421748184"  # https://t.me/c/2421748184/1
-CANAL_EVENTOS_ID = "-1002421748184"  # https://t.me/c/2421748184/1396
-
+GENERAL_CHAT_ID = "-2421748184"
+CANAL_EVENTOS_ID = "-1002421748184"
 CARTELERA_URL = "https://www.futbolenvivochile.com/"
 TZ = pytz.timezone("America/Santiago")
 
@@ -48,21 +47,26 @@ def parse_cartelera(html):
     partidos = []
     fecha = None
     campeonato = None
-    # Permite detectar cambios de sección para varios días
     for tr in soup.find_all("tr"):
-        # Cabecera de día (puede haber varias)
+        # Detecta cabecera de día (hoy, mañana, etc)
         if "cabeceraTabla" in tr.get("class", []):
             fecha = tr.get_text(strip=True)
             continue
-        # Cabecera de campeonato/competición
+        # Detecta cabecera de campeonato
         if "cabeceraCompericion" in tr.get("class", []):
             campeonato = tr.get_text(strip=True)
             continue
         tds = tr.find_all("td")
         if len(tds) >= 5 and "hora" in tds[0].get("class", []):
             hora = tds[0].get_text(strip=True)
-            local = tds[2].find("span").get("title", "") if tds[2].find("span") else tds[2].get_text(strip=True)
-            visitante = tds[3].find("span").get("title", "") if tds[3].find("span") else tds[3].get_text(strip=True)
+            local = (
+                tds[2].find("span").get("title", "")
+                if tds[2].find("span") else tds[2].get_text(strip=True)
+            )
+            visitante = (
+                tds[3].find("span").get("title", "")
+                if tds[3].find("span") else tds[3].get_text(strip=True)
+            )
             canales = []
             ul_canales = tds[4].find("ul", class_="listaCanales")
             if ul_canales:
@@ -81,14 +85,9 @@ async def scrape_cartelera_table():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
-        try:
-            await page.goto(CARTELERA_URL, timeout=120000)
-            await page.wait_for_selector("table", timeout=20000)
-            html = await page.inner_html("table")
-        except PlaywrightTimeoutError:
-            logging.error("Timeout: No se pudo cargar la página en el tiempo esperado.")
-            await browser.close()
-            return []
+        await page.goto(CARTELERA_URL, timeout=120000)
+        await page.wait_for_selector("table", timeout=20000)
+        html = await page.inner_html("table")
         await browser.close()
         return parse_cartelera(html)
 
@@ -175,6 +174,14 @@ async def enviar_texto_body(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(texto[:4000])
     except Exception as e:
         await update.message.reply_text(f"Error al obtener texto: {e}")
+
+# --- COMANDO /hora: Muestra la hora local en Chile ---
+async def hora_chile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ahora = datetime.datetime.now(TZ)
+    await update.message.reply_text(
+        f"La hora en Chile es: {ahora.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"(Zona horaria detectada: {TZ.zone})"
+    )
 
 # --- MODO NOCHE MANUAL ---
 async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -308,6 +315,7 @@ def main():
     application.add_handler(CommandHandler("cartelera", cartelera))
     application.add_handler(CommandHandler("htmlcartelera", enviar_html))
     application.add_handler(CommandHandler("textocartelera", enviar_texto_body))
+    application.add_handler(CommandHandler("hora", hora_chile))
     application.add_handler(CommandHandler("noche", modo_noche_manual))
     application.add_handler(CommandHandler("ayuda", ayuda))
 
