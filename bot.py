@@ -1,16 +1,21 @@
 import os
 import re
+import requests
+from bs4 import BeautifulSoup
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 from telegram import Update, ChatPermissions
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 PORT = int(os.environ.get('PORT', '8080'))
-WEBHOOK_PATH = f"/webhook/{TOKEN[:10]}"
 
+# Configuración de nombres de grupo/canales
 GRUPO_NOMBRE = "D.N.A. TV"
 CANAL_GENERAL = "General"
+ID_EVENTOS_DEPORTIVOS = -1002421748184  # Usa este chat_id para el canal de eventos deportivos
+URL_CARTELERA = "https://www.emol.com/movil/deportes/carteleradirecttv/index.aspx"
+
 HORA_INICIO_NOCHE = 23
 HORA_FIN_NOCHE = 8
 
@@ -22,7 +27,6 @@ def es_general(update: Update):
     return getattr(chat, "title", None) == CANAL_GENERAL and chat.type in ["supergroup", "group"]
 
 async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("Handler: bienvenida")
     if not es_general(update):
         return
     for usuario in update.message.new_chat_members:
@@ -33,7 +37,6 @@ async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(mensaje)
 
 async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("Handler: despedida")
     if not es_general(update):
         return
     usuario = update.message.left_chat_member
@@ -42,7 +45,6 @@ async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def modo_noche(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global modo_noche_avisado
-    print("Handler: modo_noche")
     if not es_general(update):
         return
     now = datetime.now(ZoneInfo("America/Santiago"))
@@ -68,14 +70,13 @@ async def modo_noche(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def aviso_fin_modo_noche(context: ContextTypes.DEFAULT_TYPE):
     global modo_dia_avisado
-    print("Job: aviso_fin_modo_noche")
     app = context.application
     now = datetime.now(ZoneInfo("America/Santiago"))
     if now.hour == HORA_FIN_NOCHE and not modo_dia_avisado:
         for update in await app.bot.get_updates():
             if hasattr(update, 'message'):
                 chat = update.message.chat
-                if getattr(chat, "title", None) == CANAL_GENERAL and chat.type in ["supergroup", "group"]:
+                if es_general(update):
                     await app.bot.send_message(chat_id=chat.id,
                         text="☀️ El modo noche ha terminado. ¡Ya puedes enviar mensajes! 😎")
                     modo_dia_avisado = True
@@ -83,7 +84,6 @@ async def aviso_fin_modo_noche(context: ContextTypes.DEFAULT_TYPE):
         modo_dia_avisado = False
 
 async def saludo_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("Handler: saludo_general")
     if not es_general(update):
         return
     now = datetime.now(ZoneInfo("America/Santiago"))
@@ -99,7 +99,6 @@ async def saludo_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def ayuda_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("Handler: ayuda_general")
     if not es_general(update):
         return
     await update.message.reply_text(
@@ -107,7 +106,6 @@ async def ayuda_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def saludo_privado(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("Handler: saludo_privado (mensaje privado recibido)", update.message)
     now = datetime.now(ZoneInfo("America/Santiago"))
     hora = now.hour
     if 6 <= hora < 12:
@@ -120,6 +118,43 @@ async def saludo_privado(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{saludo} Soy un bot, no tengo todas las respuestas. Si necesitas ayuda, por favor contáctate con el administrador."
     )
 
+def extraer_cartelera_deportiva():
+    tz = ZoneInfo("America/Santiago")
+    hoy = datetime.now(tz).date()
+    manana = hoy + timedelta(days=1)
+    dias_a_incluir = {hoy.strftime('%d-%m-%Y'), manana.strftime('%d-%m-%Y')}
+    try:
+        resp = requests.get(URL_CARTELERA, timeout=10)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        tabla = soup.find("table")
+        if not tabla:
+            return "No se encontró la cartelera deportiva."
+        eventos = []
+        for row in tabla.find_all("tr"):
+            cols = [c.get_text(strip=True) for c in row.find_all("td")]
+            if len(cols) != 4:
+                continue
+            fecha, hora, evento, canal = cols
+            if fecha in dias_a_incluir:
+                canal_mayus = canal.upper()
+                eventos.append(f"📅 {fecha} 🕒 {hora}\n🏟️ {evento}\n📺 CANAL: {canal_mayus}")
+        if eventos:
+            return "\n\n".join(eventos)
+        else:
+            return "No hay eventos deportivos programados para hoy y mañana."
+    except Exception as e:
+        print(f"Error extrayendo cartelera deportiva: {e}")
+        return "No se pudo obtener la cartelera deportiva hoy."
+
+async def enviar_cartelera_deportiva(context: ContextTypes.DEFAULT_TYPE):
+    cartelera = extraer_cartelera_deportiva()
+    await context.bot.send_message(chat_id=ID_EVENTOS_DEPORTIVOS, text=f"🏅 Cartelera deportiva de hoy y mañana:\n\n{cartelera}")
+
+async def comando_cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cartelera = extraer_cartelera_deportiva()
+    await update.message.reply_text(f"🏅 Cartelera deportiva de hoy y mañana:\n\n{cartelera}")
+
 def main():
     app = Application.builder().token(TOKEN).build()
     regex_ayuda = re.compile(r'^ayuda$', re.IGNORECASE)
@@ -130,7 +165,11 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.StatusUpdate.ALL, modo_noche))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(regex_ayuda), ayuda_general))
     app.add_handler(MessageHandler(filters.TEXT, saludo_general))
+    app.add_handler(CommandHandler("cartelera", comando_cartelera))
     app.job_queue.run_repeating(aviso_fin_modo_noche, interval=60, first=0)
+
+    # Envia cartelera deportiva cada día a las 10:00 AM Chile
+    app.job_queue.run_daily(enviar_cartelera_deportiva, time(hour=10, minute=0, tzinfo=ZoneInfo("America/Santiago")))
 
     url_base = os.environ.get('WEBHOOK_BASE', '')
     webhook_url = f"{url_base}/"
