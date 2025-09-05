@@ -9,8 +9,8 @@ from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandl
 
 # --- CONFIGURACIÓN ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GENERAL_CHAT_ID = -1002421748184  # Chat ID del grupo D.N.A. TV (formato -100XXXXX)
-GENERAL_THREAD_ID = 1             # ID del tema General (del link https://t.me/c/2421748184/1)
+GENERAL_CHAT_ID = -1002421748184  # Chat ID del grupo D.N.A. TV
+GENERAL_THREAD_ID = 1             # ID del tema General
 EVENTOS_DEPORTIVOS_THREAD_ID = 1396  # ID del tema EVENTOS DEPORTIVOS
 CARTELERA_URL = "https://www.futbolenvivochile.com/"
 TZ = pytz.timezone("America/Santiago")
@@ -333,6 +333,10 @@ async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- FILTRO DE MENSAJES MODO NOCHE ---
 async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     hora = datetime.datetime.now(TZ).hour
+    # Solo aplica en tema General
+    if hasattr(update.message, "message_thread_id"):
+        if update.message.message_thread_id != GENERAL_THREAD_ID:
+            return
     if 23 <= hora or hora < 8:
         user_id = update.effective_user.id
         chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
@@ -343,6 +347,10 @@ async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # --- RESPUESTA GENERAL EN GRUPO (tema General, cualquier mensaje excepto admins) ---
 async def respuesta_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Solo responde en el tema General, no admins
+    if hasattr(update.message, "message_thread_id"):
+        if update.message.message_thread_id != GENERAL_THREAD_ID:
+            return
     user_id = update.effective_user.id
     chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
     admin_ids = [admin.user.id for admin in chat_admins]
@@ -406,14 +414,14 @@ def main():
     # --- RESPUESTA GENERAL: cualquier mensaje en tema General excepto admins
     application.add_handler(
         MessageHandler(
-            filters.ALL & filters.Chat(GENERAL_CHAT_ID) & filters.Thread(GENERAL_THREAD_ID) & ~filters.COMMAND,
+            filters.ALL & filters.Chat(GENERAL_CHAT_ID) & ~filters.COMMAND,
             respuesta_general
         )
     )
     # --- FILTRO MODO NOCHE en tema General
     application.add_handler(
         MessageHandler(
-            filters.ALL & filters.Chat(GENERAL_CHAT_ID) & filters.Thread(GENERAL_THREAD_ID),
+            filters.ALL & filters.Chat(GENERAL_CHAT_ID),
             restringir_mensajes
         )
     )
