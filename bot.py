@@ -1,5 +1,5 @@
 import logging
-from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright  # Importamos la versión asíncrona de Playwright
 from bs4 import BeautifulSoup
 import datetime
 import os
@@ -21,18 +21,18 @@ logging.basicConfig(
 )
 
 # --- Scraping Cartelera ---
-def scrape_cartelera():
-    with sync_playwright() as p:
+async def scrape_cartelera():
+    async with async_playwright() as p:
         # Lanzar el navegador en modo "headless" (sin interfaz gráfica)
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.goto(CARTELERA_URL)
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto(CARTELERA_URL)
 
         # Esperar hasta que se carguen los eventos (si existen)
-        page.wait_for_selector("div.cartelera_fecha")
+        await page.wait_for_selector("div.cartelera_fecha")
 
         # Obtener el contenido de la página después de cargar JavaScript
-        html = page.content()
+        html = await page.content()
         soup = BeautifulSoup(html, "html.parser")
 
         eventos = []
@@ -52,12 +52,12 @@ def scrape_cartelera():
                     "logo": logo_img['src'] if logo_img and logo_img.has_attr('src') else ""
                 })
 
-        browser.close()  # Cerrar el navegador al terminar
+        await browser.close()  # Cerrar el navegador al terminar
         return eventos
 
 # --- Envío diario de eventos al canal EVENTOS DEPORTIVOS ---
 async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
-    eventos = scrape_cartelera()
+    eventos = await scrape_cartelera()  # Llamamos a la función asíncrona
     if not eventos:
         await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text="No hay eventos deportivos programados para hoy y mañana.")
         return
@@ -70,7 +70,7 @@ async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
 
 # --- Comando /cartelera manual ---
 async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    eventos = scrape_cartelera()
+    eventos = await scrape_cartelera()  # Llamamos a la función asíncrona
     if not eventos:
         await update.message.reply_text("No hay eventos deportivos programados para hoy y mañana.")
         return
