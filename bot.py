@@ -10,9 +10,9 @@ from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandl
 # --- CONFIGURACIÓN ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 ADMIN_IDS = [5032964793]
-GENERAL_CHAT_ID = "-2421748184"
-GROUP_ID = "-2421748184"
-CANAL_EVENTOS_ID = "-1002421748184"
+GENERAL_CHAT_ID = "-2421748184"      # Grupo principal D.N.A TV
+GROUP_ID = "-2421748184"             # Igual que GENERAL_CHAT_ID
+CANAL_EVENTOS_ID = "-1002421748184"  # Canal EVENTOS DEPORTIVOS
 
 CARTELERA_URL = "https://www.futbolenvivochile.com/"
 TZ = pytz.timezone("America/Santiago")  # Usar horario de Chile
@@ -33,7 +33,7 @@ async def scrape_cartelera():
         except PlaywrightTimeoutError:
             logging.error("Timeout: No se pudo cargar la página en el tiempo esperado.")
             await browser.close()
-            return []
+            return {}
 
         html = await page.content()
 
@@ -46,60 +46,54 @@ async def scrape_cartelera():
             logging.error(f"Error guardando HTML: {e}")
 
         soup = BeautifulSoup(html, "html.parser")
-        eventos = []
-
-        # Buscar la fecha para mañana en formato: "Mañana sábado, 06-09-2025"
+        
+        # --- Lógica para captar solo eventos debajo de la fecha de mañana y agrupar por campeonato ---
         tomorrow = datetime.datetime.now(TZ).date() + datetime.timedelta(days=1)
         tomorrow_str = tomorrow.strftime("%d-%m-%Y")
+        
+        # Busca el encabezado con la fecha "Mañana" y la fecha
+        fecha_header = None
+        for tag in soup.find_all(["div", "td", "span"]):
+            txt = tag.get_text(strip=True)
+            if txt.startswith("Mañana") and tomorrow_str in txt:
+                fecha_header = tag
+                break
 
-        # Encuentra el bloque con la fecha de mañana
-        blocks = soup.find_all("div", string=lambda s: s and tomorrow_str in s)
-        if not blocks:
-            # Alternativamente busca por el texto "Mañana"
-            blocks = soup.find_all("div", string=lambda s: s and "Mañana" in s)
-        # Si no hay bloques, busca la tabla principal y extrae todos los eventos
-        if blocks:
-            # Encuentra la tabla de eventos después del encabezado
-            for block in blocks:
-                table = block.find_next("table")
-                if not table:
-                    continue
-                rows = table.find_all("tr")
-                for row in rows:
-                    cols = row.find_all("td")
-                    if len(cols) < 3:
-                        continue
+        if not fecha_header:
+            logging.info("No se encontró el bloque de la fecha buscada")
+            return {}
+
+        campeonatos = {}
+        current = fecha_header.find_next_sibling()
+        campeonato_actual = None
+
+        while current:
+            txt = current.get_text(strip=True)
+            # Si encontramos otro encabezado de fecha, detenemos
+            if (txt.startswith("Hoy") or txt.startswith("Mañana") or txt.startswith("domingo") or txt.startswith("lunes") or txt.startswith("martes") or txt.startswith("miércoles") or txt.startswith("jueves") or txt.startswith("viernes")) and tomorrow_str not in txt:
+                break
+
+            # Detecta bloque de campeonato (usando su estilo, clase, o si es un div con fondo)
+            if current.name == "div" and ("background" in current.get("style", "") or current.get("class")):
+                campeonato_actual = txt
+                campeonatos[campeonato_actual] = []
+            # Detecta filas de eventos
+            if current.name == "tr":
+                cols = current.find_all("td")
+                if len(cols) >= 3:
                     hora = cols[0].get_text(strip=True)
                     equipos = cols[1].get_text(separator=" vs ", strip=True)
                     canales = cols[2].get_text(separator=", ", strip=True)
-                    eventos.append({
-                        "fecha": tomorrow_str,
-                        "hora": hora,
-                        "nombre": equipos,
-                        "canales": canales
-                    })
-        else:
-            # Modo alternativo: buscar todos los horarios y equipos en la tabla principal
-            tables = soup.find_all("table")
-            for table in tables:
-                rows = table.find_all("tr")
-                for row in rows:
-                    cols = row.find_all("td")
-                    if len(cols) < 3:
-                        continue
-                    hora = cols[0].get_text(strip=True)
-                    equipos = cols[1].get_text(separator=" vs ", strip=True)
-                    canales = cols[2].get_text(separator=", ", strip=True)
-                    eventos.append({
-                        "fecha": tomorrow_str,
-                        "hora": hora,
-                        "nombre": equipos,
-                        "canales": canales
-                    })
-
-        await browser.close()
-        logging.info(f"Eventos obtenidos: {eventos}")
-        return eventos
+                    if campeonato_actual:
+                        campeonatos[campeonato_actual].append({
+                            "fecha": tomorrow_str,
+                            "hora": hora,
+                            "nombre": equipos,
+                            "canales": canales
+                        })
+            current = current.find_next_sibling()
+        logging.info(f"Eventos obtenidos: {campeonatos}")
+        return campeonatos
 
 # --- Comando para enviar el HTML por Telegram ---
 async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -114,23 +108,35 @@ async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Envío de eventos del día siguiente al canal EVENTOS DEPORTIVOS ---
 async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
-    eventos = await scrape_cartelera()
-    if not eventos:
+    campeonatos = await scrape_cartelera()
+    if not campeonatos:
         await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text="No hay eventos deportivos programados para mañana.")
         return
-    for evento in eventos:
-        texto = f"📅 *{evento['fecha']}*\n*{evento['hora']}*\n_{evento['nombre']}_\nCanales: {evento['canales']}"
-        await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text=texto, parse_mode="Markdown")
+    for camp, eventos in campeonatos.items():
+        if not eventos:
+            continue
+        mensaje = f"🏆 *{camp}*\n"
+        for evento in eventos:
+            mensaje += f"📅 *{evento['fecha']}* - *{evento['hora']}*\n_{evento['nombre']}_\nCanales: {evento['canales']}\n\n"
+        await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text=mensaje, parse_mode="Markdown")
 
 # --- Comando /cartelera manual ---
 async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        eventos = await scrape_cartelera()
-        if not eventos:
+        campeonatos = await scrape_cartelera()
+        if not campeonatos:
             await update.message.reply_text("No hay eventos deportivos programados para mañana.")
             return
-        for evento in eventos:
-            texto = f"📅 *{evento['fecha']}*\n*{evento['hora']}*\n_{evento['nombre']}_\nCanales: {evento['canales']}"
+        mensajes = []
+        for camp, eventos in campeonatos.items():
+            if not eventos:
+                continue
+            mensaje = f"🏆 *{camp}*\n"
+            for evento in eventos:
+                mensaje += f"📅 *{evento['fecha']}* - *{evento['hora']}*\n_{evento['nombre']}_\nCanales: {evento['canales']}\n\n"
+            mensajes.append(mensaje)
+        # Envía cada campeonato como un mensaje separado (evita el límite de tamaño de Telegram)
+        for texto in mensajes:
             await update.message.reply_text(texto, parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"Error: {str(e)}")
@@ -254,7 +260,7 @@ def main():
 
     # Comandos
     application.add_handler(CommandHandler("cartelera", cartelera))
-    application.add_handler(CommandHandler("htmlcartelera", enviar_html))
+    application.add_handler(CommandHandler("htmlcartelera", enviar_html))  # Nuevo comando para enviar HTML
     application.add_handler(CommandHandler("noche", modo_noche_manual))
     application.add_handler(CommandHandler("ayuda", ayuda))
 
