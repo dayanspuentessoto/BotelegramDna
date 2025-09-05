@@ -92,7 +92,7 @@ async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
             page = await browser.new_page()
             await page.goto(CARTELERA_URL, timeout=120000)
             # Espera 10 segundos para asegurar que el contenido cargado por JS aparezca
-            await page.wait_for_timeout(10000)
+            await page.wait_for_selector("table", timeout=20000)
             html = await page.content()
             await browser.close()
             await update.message.reply_text(html[:4000])
