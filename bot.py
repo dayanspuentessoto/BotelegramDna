@@ -100,12 +100,18 @@ async def scrape_cartelera():
 
 # --- Comando para enviar el HTML por Telegram ---
 async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    html_path = "/tmp/cartelera.html"
+    html_path = "cartelera.html"
     if os.path.exists(html_path):
         try:
-            await update.message.reply_document(document=InputFile(html_path), caption="HTML cartelera para depuración.")
+            with open(html_path, "r", encoding="utf-8") as f:
+                html = f.read()
+            # Envía solo los primeros 4000 caracteres (límite Telegram)
+            await update.message.reply_text(html[:4000])
+            # Si deseas enviar más, puedes dividir y enviar en partes:
+            # for i in range(4000, len(html), 4000):
+            #     await update.message.reply_text(html[i:i+4000])
         except Exception as e:
-            await update.message.reply_text(f"Error al enviar HTML: {e}")
+            await update.message.reply_text(f"Error al leer y enviar HTML: {e}")
     else:
         await update.message.reply_text("No se encontró el archivo de cartelera.")
 
