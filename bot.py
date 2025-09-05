@@ -10,8 +10,8 @@ from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandl
 # --- CONFIGURACIÓN ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 ADMIN_IDS = [5032964793]
-GENERAL_CHAT_ID = "-2421748184"
-CANAL_EVENTOS_ID = "-1002421748184"
+GENERAL_CHAT_ID = "-2421748184"  # https://t.me/c/2421748184/1
+CANAL_EVENTOS_ID = "-1002421748184"  # https://t.me/c/2421748184/1396
 
 CARTELERA_URL = "https://www.futbolenvivochile.com/"
 TZ = pytz.timezone("America/Santiago")
@@ -20,70 +20,144 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
-# --- Scraping Cartelera de Futbol en Vivo Chile ---
-async def scrape_cartelera():
+def agrupa_partidos_por_campeonato(partidos):
+    agrupados = {}
+    for partido in partidos:
+        fecha = partido["fecha"] or ""
+        campeonato = partido["campeonato"] or "Sin campeonato"
+        key = (fecha, campeonato)
+        if key not in agrupados:
+            agrupados[key] = []
+        agrupados[key].append(partido)
+    return agrupados
+
+def parse_cartelera(html):
+    soup = BeautifulSoup(html, "html.parser")
+    partidos = []
+    fecha = None
+    campeonato = None
+
+    for tr in soup.find_all("tr"):
+        # Cabecera de día
+        if "cabeceraTabla" in tr.get("class", []):
+            fecha = tr.get_text(strip=True)
+            continue
+        # Cabecera de campeonato/competición
+        if "cabeceraCompericion" in tr.get("class", []):
+            campeonato = tr.get_text(strip=True)
+            continue
+        tds = tr.find_all("td")
+        if len(tds) >= 5 and "hora" in tds[0].get("class", []):
+            hora = tds[0].get_text(strip=True)
+            local = tds[2].find("span").get("title", "") if tds[2].find("span") else tds[2].get_text(strip=True)
+            visitante = tds[3].find("span").get("title", "") if tds[3].find("span") else tds[3].get_text(strip=True)
+            canales = []
+            ul_canales = tds[4].find("ul", class_="listaCanales")
+            if ul_canales:
+                canales = [li.get_text(strip=True) for li in ul_canales.find_all("li")]
+            partidos.append({
+                "fecha": fecha,
+                "campeonato": campeonato,
+                "hora": hora,
+                "local": local,
+                "visitante": visitante,
+                "canales": canales
+            })
+    return partidos
+
+async def scrape_cartelera_table():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
-
         try:
             await page.goto(CARTELERA_URL, timeout=120000)
             await page.wait_for_selector("table", timeout=20000)
+            html = await page.inner_html("table")
         except PlaywrightTimeoutError:
             logging.error("Timeout: No se pudo cargar la página en el tiempo esperado.")
             await browser.close()
-            return {}
+            return []
+        await browser.close()
+        return parse_cartelera(html)
 
-        html = await page.content()
-        soup = BeautifulSoup(html, "html.parser")
-        
-        tomorrow = datetime.datetime.now(TZ).date() + datetime.timedelta(days=1)
-        tomorrow_str = tomorrow.strftime("%d-%m-%Y")
+def dias_a_mostrar():
+    hoy = datetime.datetime.now(TZ).date()
+    return [
+        hoy,  # Hoy
+        hoy + datetime.timedelta(days=1),  # Mañana
+    ]
 
-        fecha_header = None
-        for tag in soup.find_all(text=True):
-            if "mañana" in tag.lower() and tomorrow_str in tag:
-                fecha_header = tag.parent
-                break
+def fecha_en_partido(fecha_str):
+    import re
+    match = re.search(r"(\d{2}-\d{2}-\d{4})", fecha_str or "")
+    if match:
+        d,m,y = map(int, match.group(1).split('-'))
+        return datetime.date(y,m,d)
+    return None
 
-        if not fecha_header:
-            logging.info("No se encontró el bloque de la fecha buscada")
-            return {}
+def filtra_partidos_por_dia(partidos, fechas_obj):
+    partidos_filtrados = []
+    for partido in partidos:
+        fecha_obj = fecha_en_partido(partido.get("fecha"))
+        if fecha_obj and fecha_obj in fechas_obj:
+            partidos_filtrados.append(partido)
+    return partidos_filtrados
 
-        campeonatos = {}
-        current = fecha_header.find_next_sibling()
-        campeonato_actual = None
+def formato_mensaje_partidos(agrupados, fechas_obj):
+    mensaje = "⚽ *Cartelera de Partidos Televisados*\n"
+    fechas_ordenadas = sorted({f for (f, c) in agrupados.keys() if fecha_en_partido(f) in fechas_obj}, key=lambda x: fecha_en_partido(x))
+    for fecha in fechas_ordenadas:
+        mensaje += f"\n📅 *{fecha}*\n"
+        campeonatos = sorted({c for (f, c) in agrupados.keys() if f == fecha})
+        for campeonato in campeonatos:
+            mensaje += f"\n🏆 *{campeonato}*\n"
+            partidos = agrupados.get((fecha, campeonato), [])
+            for partido in partidos:
+                canales_str = ", ".join(partido['canales']) if partido['canales'] else "Sin canal"
+                mensaje += (
+                    f"• {partido['hora']} | {partido['local']} vs {partido['visitante']} | {canales_str}\n"
+                )
+    return mensaje
 
-        while current:
-            txt = current.get_text(strip=True)
-            if any(day in txt.lower() for day in [
-                "hoy", "mañana", "domingo", "lunes", "martes", "miércoles", "jueves", "viernes"
-            ]) and tomorrow_str not in txt:
-                break
+# --- COMANDO /cartelera: Muestra partidos organizados por campeonato y día ---
+async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        partidos = await scrape_cartelera_table()
+        if not partidos:
+            await update.message.reply_text("No hay eventos deportivos programados para hoy ni próximos días.")
+            return
+        fechas_obj = dias_a_mostrar()
+        partidos_dias = filtra_partidos_por_dia(partidos, fechas_obj)
+        if not partidos_dias:
+            await update.message.reply_text("No hay partidos para hoy ni próximos días.")
+            return
+        agrupados = agrupa_partidos_por_campeonato(partidos_dias)
+        mensaje = formato_mensaje_partidos(agrupados, fechas_obj)
+        await update.message.reply_text(mensaje, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Error: {str(e)}")
+        logging.error(f"Error en /cartelera: {e}")
 
-            if current.name == "div" and (
-                "background" in current.get("style", "") or current.get("class")
-            ):
-                campeonato_actual = txt
-                campeonatos[campeonato_actual] = []
-            if current.name == "tr":
-                cols = current.find_all("td")
-                if len(cols) >= 3:
-                    hora = cols[0].get_text(strip=True)
-                    equipos = cols[1].get_text(separator=" vs ", strip=True)
-                    canales = cols[2].get_text(separator=", ", strip=True)
-                    if campeonato_actual:
-                        campeonatos[campeonato_actual].append({
-                            "fecha": tomorrow_str,
-                            "hora": hora,
-                            "nombre": equipos,
-                            "canales": canales
-                        })
-            current = current.find_next_sibling()
-        logging.info(f"Eventos obtenidos: {campeonatos}")
-        return campeonatos
+# --- ENVÍO AUTOMÁTICO DIARIO AL CANAL DE EVENTOS DEPORTIVOS ---
+async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        partidos = await scrape_cartelera_table()
+        if not partidos:
+            await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text="No hay eventos deportivos programados para hoy ni próximos días.")
+            return
+        fechas_obj = dias_a_mostrar()
+        partidos_dias = filtra_partidos_por_dia(partidos, fechas_obj)
+        if not partidos_dias:
+            await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text="No hay partidos para hoy ni próximos días.")
+            return
+        agrupados = agrupa_partidos_por_campeonato(partidos_dias)
+        mensaje = formato_mensaje_partidos(agrupados, fechas_obj)
+        await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text=mensaje, parse_mode="Markdown")
+    except Exception as e:
+        await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text=f"Error al obtener cartelera: {str(e)}")
+        logging.error(f"Error en envío diario: {e}")
 
-# --- Comando para enviar el HTML de la cartelera (solo la primera tabla) ---
+# --- COMANDO /htmlcartelera: Envía HTML de la tabla principal ---
 async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         async with async_playwright() as p:
@@ -94,13 +168,10 @@ async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
             html = await page.inner_html("table")
             await browser.close()
             await update.message.reply_text(html[:4000])
-            # Si quieres ver más, puedes dividir el HTML y enviarlo en partes:
-            # for i in range(4000, len(html), 4000):
-            #     await update.message.reply_text(html[i:i+4000])
     except Exception as e:
         await update.message.reply_text(f"Error al obtener HTML: {e}")
 
-# --- Comando para enviar el texto plano del body ---
+# --- COMANDO /textocartelera: Envía el texto plano del body ---
 async def enviar_texto_body(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         async with async_playwright() as p:
@@ -111,48 +182,10 @@ async def enviar_texto_body(update: Update, context: ContextTypes.DEFAULT_TYPE):
             texto = await page.inner_text("body")
             await browser.close()
             await update.message.reply_text(texto[:4000])
-            # Si quieres ver más, puedes dividir el texto y enviarlo en partes:
-            # for i in range(4000, len(texto), 4000):
-            #     await update.message.reply_text(texto[i:i+4000])
     except Exception as e:
         await update.message.reply_text(f"Error al obtener texto: {e}")
 
-# --- Envío de eventos del día siguiente al canal EVENTOS DEPORTIVOS ---
-async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
-    campeonatos = await scrape_cartelera()
-    if not campeonatos:
-        await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text="No hay eventos deportivos programados para mañana.")
-        return
-    for camp, eventos in campeonatos.items():
-        if not eventos:
-            continue
-        mensaje = f"🏆 *{camp}*\n"
-        for evento in eventos:
-            mensaje += f"📅 *{evento['fecha']}* - *{evento['hora']}*\n_{evento['nombre']}_\nCanales: {evento['canales']}\n\n"
-        await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text=mensaje, parse_mode="Markdown")
-
-# --- Comando /cartelera manual ---
-async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        campeonatos = await scrape_cartelera()
-        if not campeonatos:
-            await update.message.reply_text("No hay eventos deportivos programados para mañana.")
-            return
-        mensajes = []
-        for camp, eventos in campeonatos.items():
-            if not eventos:
-                continue
-            mensaje = f"🏆 *{camp}*\n"
-            for evento in eventos:
-                mensaje += f"📅 *{evento['fecha']}* - *{evento['hora']}*\n_{evento['nombre']}_\nCanales: {evento['canales']}\n\n"
-            mensajes.append(mensaje)
-        for texto in mensajes:
-            await update.message.reply_text(texto, parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"Error: {str(e)}")
-        logging.error(f"Error en /cartelera: {e}")
-
-# --- Modo noche manual ---
+# --- MODO NOCHE MANUAL ---
 async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("Solo el administrador puede activar el modo noche manualmente.")
@@ -160,7 +193,7 @@ async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await activar_modo_noche(context, update.effective_chat.id)
     await update.message.reply_text("Modo noche activado manualmente hasta las 08:00.")
 
-# --- Modo noche automático ---
+# --- MODO NOCHE AUTOMÁTICO ---
 async def activar_modo_noche(context: ContextTypes.DEFAULT_TYPE, chat_id):
     permisos = ChatPermissions(
         can_send_messages=False,
@@ -189,7 +222,7 @@ async def desactivar_modo_noche(context: ContextTypes.DEFAULT_TYPE):
     await context.bot.set_chat_permissions(GENERAL_CHAT_ID, permissions=permisos)
     await context.bot.send_message(GENERAL_CHAT_ID, text="☀️ ¡Fin del modo noche! Ya pueden enviar mensajes.")
 
-# --- Saludo según hora (zona horaria Chile) ---
+# --- SALUDO SEGÚN HORA ---
 def obtener_saludo():
     hora = datetime.datetime.now(TZ).hour
     if 6 <= hora < 12:
@@ -199,24 +232,29 @@ def obtener_saludo():
     else:
         return "¡Buenas noches!"
 
-# --- Mensaje bienvenida ---
+# --- MENSAJE BIENVENIDA ---
 async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    for member in update.chat_member.new_chat_members:
-        nombre = member.first_name if member.first_name else ""
-        apellidos = member.last_name if member.last_name else ""
-        nombre_completo = f"{nombre} {apellidos}".strip()
-        if not nombre_completo:
-            nombre_completo = member.username if member.username else "Usuario"
-        await context.bot.send_message(
-            GENERAL_CHAT_ID,
-            text=f"{nombre_completo} BIENVENIDO(A) A NUESTRO SELECTO GRUPO D.N.A. TV, MANTENTE SIEMPRE AL DIA Y ACTUALIZADO, SI TIENES ALGUNA DUDA ESCRIBE EL COMANDO AYUDA PARA MAS INFO 😎🤖",
-        )
+    # Este handler se activa en ChatMemberHandler.CHAT_MEMBER
+    chat_member = update.chat_member
+    # Solo si hay nuevos miembros
+    if chat_member.new_chat_members:
+        for member in chat_member.new_chat_members:
+            nombre = member.first_name if member.first_name else ""
+            apellidos = member.last_name if member.last_name else ""
+            nombre_completo = f"{nombre} {apellidos}".strip()
+            if not nombre_completo:
+                nombre_completo = member.username if member.username else "Usuario"
+            await context.bot.send_message(
+                GENERAL_CHAT_ID,
+                text=f"{nombre_completo} BIENVENIDO(A) A NUESTRO SELECTO GRUPO D.N.A. TV, MANTENTE SIEMPRE AL DIA Y ACTUALIZADO, SI TIENES ALGUNA DUDA ESCRIBE EL COMANDO AYUDA PARA MAS INFO 😎🤖",
+            )
 
-# --- Mensaje despedida ---
+# --- MENSAJE DESPEDIDA ---
 async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.chat_member.old_chat_member.status not in ['left', 'kicked']:
+    chat_member = update.chat_member
+    if chat_member.old_chat_member.status not in ['left', 'kicked']:
         return
-    user = update.chat_member.old_chat_member.user
+    user = chat_member.old_chat_member.user
     nombre = user.first_name if user.first_name else ""
     apellidos = user.last_name if user.last_name else ""
     nombre_completo = f"{nombre} {apellidos}".strip()
@@ -227,7 +265,7 @@ async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=f"{nombre_completo} ADIOS, DESPUES NO RECLAMES NI PREGUNTES🤷🏻‍♂"
     )
 
-# --- Filtro de mensajes modo noche ---
+# --- FILTRO DE MENSAJES MODO NOCHE ---
 async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     hora = datetime.datetime.now(TZ).hour
     if 23 <= hora or hora < 8:
@@ -236,7 +274,7 @@ async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
         await update.message.delete()
 
-# --- RESPUESTA automática fuera de modo noche (grupo) ---
+# --- RESPUESTA GENERAL EN GRUPO ---
 async def respuesta_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
     hora = datetime.datetime.now(TZ).hour
     if 8 <= hora < 23:
@@ -245,7 +283,7 @@ async def respuesta_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{saludo} 👋 Si necesitas ayuda, escribe el comando /ayuda para recibir información clara sobre cómo contactar al administrador y resolver tus dudas."
         )
 
-# --- RESPUESTA automática por privado ---
+# --- RESPUESTA PRIVADA ---
 async def respuesta_privada(update: Update, context: ContextTypes.DEFAULT_TYPE):
     saludo = obtener_saludo()
     await update.message.reply_text(
@@ -254,7 +292,7 @@ async def respuesta_privada(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "También puedes escribir /ayuda para ver información y recursos útiles."
     )
 
-# --- Comando /ayuda ---
+# --- COMANDO /ayuda ---
 async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = (
         "👋 ¡Hola! Tu mensaje ha sido recibido.\n"
@@ -274,7 +312,7 @@ def main():
     application.add_handler(CommandHandler("noche", modo_noche_manual))
     application.add_handler(CommandHandler("ayuda", ayuda))
 
-    # Jobs automáticos
+    # Jobs automáticos (modo noche)
     application.job_queue.run_daily(
         lambda context: activar_modo_noche(context, GENERAL_CHAT_ID),
         time=datetime.time(hour=23, minute=0, tzinfo=TZ),
@@ -285,24 +323,24 @@ def main():
         time=datetime.time(hour=8, minute=0, tzinfo=TZ),
         name="desactivar_modo_noche"
     )
+
+    # Job para enviar cartelera todos los días a las 10:00 AM al canal de eventos deportivos
     application.job_queue.run_daily(
         enviar_eventos_diarios,
         time=datetime.time(hour=10, minute=0, tzinfo=TZ),
-        name="eventos_diarios"
+        name="cartelera_diaria"
     )
 
     application.add_handler(ChatMemberHandler(bienvenida, ChatMemberHandler.CHAT_MEMBER))
     application.add_handler(ChatMemberHandler(despedida, ChatMemberHandler.CHAT_MEMBER))
 
     application.add_handler(MessageHandler(filters.ALL & filters.Chat(GENERAL_CHAT_ID), restringir_mensajes))
-
     application.add_handler(
         MessageHandler(
             filters.TEXT & filters.Chat(GENERAL_CHAT_ID) & ~filters.COMMAND & ~filters.Regex(r"^/ayuda"),
             respuesta_general
         )
     )
-
     application.add_handler(
         MessageHandler(
             filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND,
