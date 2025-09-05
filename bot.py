@@ -46,9 +46,9 @@ def fecha_en_partido(fecha_str):
 def agrupa_partidos_por_campeonato(partidos):
     agrupados = {}
     for partido in partidos:
-        fecha = partido["fecha"] or ""
+        fecha_obj = fecha_en_partido(partido["fecha"])
         campeonato = partido["campeonato"] or "Sin campeonato"
-        key = (fecha, campeonato)
+        key = (fecha_obj, campeonato)
         if key not in agrupados:
             agrupados[key] = []
         agrupados[key].append(partido)
@@ -96,6 +96,7 @@ async def scrape_cartelera_table():
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         await page.goto(CARTELERA_URL, timeout=120000)
+        # Scroll para carga dinámica
         for _ in range(10):
             await page.evaluate("window.scrollBy(0, window.innerHeight);")
             await page.wait_for_timeout(800)
@@ -113,10 +114,10 @@ def filtra_partidos_por_fecha(partidos, fecha_filtrar):
 
 def formato_mensaje_partidos(agrupados, fecha):
     mensaje = f"⚽ *Cartelera de Partidos Televisados - {fecha.strftime('%d-%m-%Y')}*\n"
-    campeonatos = sorted({c for (f, c) in agrupados.keys() if fecha_en_partido(f) == fecha})
+    campeonatos = sorted({c for (f, c) in agrupados.keys() if f == fecha})
     for campeonato in campeonatos:
         mensaje += f"\n🏆 *{campeonato}*\n"
-        partidos = agrupados.get((fecha.strftime('%d-%m-%Y'), campeonato), [])
+        partidos = agrupados.get((fecha, campeonato), [])
         for partido in partidos:
             canales_str = ", ".join(partido['canales']) if partido['canales'] else "Sin canal"
             mensaje += (
