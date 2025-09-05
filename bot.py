@@ -1,5 +1,5 @@
 import logging
-from playwright.async_api import async_playwright  # Usamos la versión asíncrona de Playwright
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError  # Usamos la versión asíncrona de Playwright
 from bs4 import BeautifulSoup
 import datetime
 import os
@@ -26,13 +26,13 @@ async def scrape_cartelera():
         # Lanzar el navegador en modo "headless" (sin interfaz gráfica)
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
-        await page.goto(CARTELERA_URL)
 
         try:
+            await page.goto(CARTELERA_URL, timeout=120000)  # Aumento el tiempo de espera para la carga de la página (120 segundos)
             # Esperar hasta que se carguen los eventos (si existen), con un mayor tiempo de espera
-            await page.wait_for_selector("div.fc-event", timeout=60000)  # Aumento el tiempo de espera a 60 segundos
-        except TimeoutError:
-            print("No se pudo cargar el selector en el tiempo esperado.")
+            await page.wait_for_selector("div.fc-event", timeout=120000)  # Aumento el tiempo de espera a 120 segundos
+        except PlaywrightTimeoutError:
+            logging.error("Timeout: No se pudo cargar la página en el tiempo esperado.")
             await browser.close()  # Cerrar el navegador al terminar
             return []
 
