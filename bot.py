@@ -96,7 +96,7 @@ async def saludo_privado(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def main():
-    app = Application.builder().token(TOKEN).job_queue().build()  # <-- ¡ACTIVA EL JOB QUEUE!
+    app = Application.builder().token(TOKEN).build()  # <-- ESTA ES LA LÍNEA CORRECTA
     regex_ayuda = re.compile(r'^ayuda$', re.IGNORECASE)
 
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE, saludo_privado))
