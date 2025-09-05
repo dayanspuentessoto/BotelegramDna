@@ -10,10 +10,10 @@ from telegram.ext import Application, MessageHandler, CommandHandler, filters, C
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 PORT = int(os.environ.get('PORT', '8080'))
 
-# Configuración de nombres de grupo/canales
+# Configuración de nombres de grupo/canales y chat_id EVENTOS DEPORTIVOS
 GRUPO_NOMBRE = "D.N.A. TV"
 CANAL_GENERAL = "General"
-ID_EVENTOS_DEPORTIVOS = -1002421748184  # Usa este chat_id para el canal de eventos deportivos
+ID_EVENTOS_DEPORTIVOS = -1002421748184  # chat_id del canal EVENTOS DEPORTIVOS
 URL_CARTELERA = "https://www.emol.com/movil/deportes/carteleradirecttv/index.aspx"
 
 HORA_INICIO_NOCHE = 23
@@ -137,12 +137,8 @@ def extraer_cartelera_deportiva():
                 continue
             fecha, hora, evento, canal = cols
             if fecha in dias_a_incluir:
-                canal_mayus = canal.upper()
-                eventos.append(f"📅 {fecha} 🕒 {hora}\n🏟️ {evento}\n📺 CANAL: {canal_mayus}")
-        if eventos:
-            return "\n\n".join(eventos)
-        else:
-            return "No hay eventos deportivos programados para hoy y mañana."
+                eventos.append(f"📅 {fecha} 🕒 {hora}\n🏟️ {evento}\n📺 CANAL: {canal.upper()}")
+        return "\n\n".join(eventos) if eventos else "No hay eventos deportivos programados para hoy y mañana."
     except Exception as e:
         print(f"Error extrayendo cartelera deportiva: {e}")
         return "No se pudo obtener la cartelera deportiva hoy."
@@ -153,11 +149,14 @@ async def enviar_cartelera_deportiva(context: ContextTypes.DEFAULT_TYPE):
 
 async def comando_cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cartelera = extraer_cartelera_deportiva()
-    await update.message.reply_text(f"🏅 Cartelera deportiva de hoy y mañana:\n\n{cartelera}")
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"🏅 Cartelera deportiva de hoy y mañana:\n\n{cartelera}")
 
 def main():
     app = Application.builder().token(TOKEN).build()
     regex_ayuda = re.compile(r'^ayuda$', re.IGNORECASE)
+
+    # --- ÓPTIMA SECUENCIA DE HANDLERS ---
+    app.add_handler(CommandHandler("cartelera", comando_cartelera))  # Comando debe ir primero
 
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE, saludo_privado))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, bienvenida))
@@ -165,10 +164,9 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.StatusUpdate.ALL, modo_noche))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(regex_ayuda), ayuda_general))
     app.add_handler(MessageHandler(filters.TEXT, saludo_general))
-    app.add_handler(CommandHandler("cartelera", comando_cartelera))
-    app.job_queue.run_repeating(aviso_fin_modo_noche, interval=60, first=0)
+    # -------------------------------------
 
-    # Envia cartelera deportiva cada día a las 10:00 AM Chile
+    app.job_queue.run_repeating(aviso_fin_modo_noche, interval=60, first=0)
     app.job_queue.run_daily(enviar_cartelera_deportiva, time(hour=10, minute=0, tzinfo=ZoneInfo("America/Santiago")))
 
     url_base = os.environ.get('WEBHOOK_BASE', '')
