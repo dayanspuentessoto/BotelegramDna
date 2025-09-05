@@ -25,10 +25,28 @@ def dias_a_mostrar():
 
 def fecha_en_partido(fecha_str):
     import re
-    match = re.search(r"(\d{2}-\d{2}-\d{4})", fecha_str or "")
+    fecha_str = (fecha_str or "").lower()
+    hoy = datetime.datetime.now(TZ).date()
+    manana = hoy + datetime.timedelta(days=1)
+    # Busca fecha en formato dd-mm-yyyy
+    match = re.search(r"(\d{2}-\d{2}-\d{4})", fecha_str)
     if match:
-        d,m,y = map(int, match.group(1).split('-'))
-        return datetime.date(y,m,d)
+        d, m, y = map(int, match.group(1).split('-'))
+        fecha = datetime.date(y, m, d)
+        # Si dice 'hoy' y la fecha coincide con hoy
+        if "hoy" in fecha_str and fecha == hoy:
+            return hoy
+        # Si dice 'mañana' y la fecha coincide con mañana
+        if ("mañana" in fecha_str or "manana" in fecha_str) and fecha == manana:
+            return manana
+        # Si no dice 'hoy' ni 'mañana', igual retorna la fecha encontrada
+        return fecha
+    # Si solo dice 'hoy' pero no tiene fecha
+    if "hoy" in fecha_str:
+        return hoy
+    # Si solo dice 'mañana' pero no tiene fecha
+    if "mañana" in fecha_str or "manana" in fecha_str:
+        return manana
     return None
 
 def agrupa_partidos_por_campeonato(partidos):
@@ -103,7 +121,11 @@ def filtra_partidos_por_dia(partidos):
 def formato_mensaje_partidos(agrupados):
     mensaje = "⚽ *Cartelera de Partidos Televisados*\n"
     fechas_validas = dias_a_mostrar()
-    fechas_ordenadas = sorted({f for (f, c) in agrupados.keys() if fecha_en_partido(f) in fechas_validas}, key=lambda x: fecha_en_partido(x))
+    # Usamos fecha_en_partido para obtener el objeto de fecha real para ordenar
+    fechas_ordenadas = sorted(
+        {f for (f, c) in agrupados.keys() if fecha_en_partido(f) in fechas_validas},
+        key=lambda x: fecha_en_partido(x)
+    )
     for fecha in fechas_ordenadas:
         mensaje += f"\n📅 *{fecha}*\n"
         campeonatos = sorted({c for (f, c) in agrupados.keys() if f == fecha})
