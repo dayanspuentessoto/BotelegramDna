@@ -1,20 +1,21 @@
 import logging
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError  # Usamos la versión asíncrona de Playwright
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from bs4 import BeautifulSoup
 import datetime
+import pytz
 import os
-from telegram import Update, ChatPermissions
+from telegram import Update, ChatPermissions, InputFile
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters, ChatMemberHandler
 
 # --- CONFIGURACIÓN ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 ADMIN_IDS = [5032964793]
-GENERAL_CHAT_ID = "-2421748184"      # Grupo principal D.N.A TV
-GROUP_ID = "-2421748184"             # Igual que GENERAL_CHAT_ID
-CANAL_EVENTOS_ID = "-1002421748184"  # Canal EVENTOS DEPORTIVOS
+GENERAL_CHAT_ID = "-2421748184"
+GROUP_ID = "-2421748184"
+CANAL_EVENTOS_ID = "-1002421748184"
 
 CARTELERA_URL = "https://www.futbolenvivochile.com/"
-TZ = datetime.timezone.utc
+TZ = pytz.timezone("America/Santiago")  # Usar horario de Chile
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -23,59 +24,97 @@ logging.basicConfig(
 # --- Scraping Cartelera de Futbol en Vivo Chile ---
 async def scrape_cartelera():
     async with async_playwright() as p:
-        # Lanzar el navegador en modo "headless" (sin interfaz gráfica)
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
 
         try:
-            await page.goto(CARTELERA_URL, timeout=120000)  # Aumento el tiempo de espera para la carga de la página (120 segundos)
-            # Esperar hasta que se carguen los eventos (si existen), con un mayor tiempo de espera
-            await page.wait_for_selector("div.fc-event", timeout=120000)  # Aumento el tiempo de espera a 120 segundos
+            await page.goto(CARTELERA_URL, timeout=120000)
+            await page.wait_for_timeout(5000)
         except PlaywrightTimeoutError:
             logging.error("Timeout: No se pudo cargar la página en el tiempo esperado.")
-            await browser.close()  # Cerrar el navegador al terminar
+            await browser.close()
             return []
 
-        # Agregar un pequeño retraso explícito por si la página aún está cargando dinámicamente
-        await page.wait_for_timeout(5000)
-
-        # Obtener el contenido de la página después de cargar JavaScript
         html = await page.content()
+
+        # Guardar HTML para depuración
+        html_path = "/tmp/cartelera.html"
+        try:
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(html)
+        except Exception as e:
+            logging.error(f"Error guardando HTML: {e}")
+
         soup = BeautifulSoup(html, "html.parser")
-
         eventos = []
-        tomorrow = datetime.datetime.now(TZ).date() + datetime.timedelta(days=1)  # Día siguiente
 
-        # Aquí ajustamos para capturar los eventos de fútbol
-        for evento in soup.find_all("div", class_="fc-event"):
-            fecha = evento.find_previous("span", class_="fc-event-title")
-            horario = evento.find("div", class_="fc-event-time")
-            nombre_equipo = evento.find("div", class_="fc-event-title")
-            canales = evento.find("div", class_="fc-event-location")
+        # Buscar la fecha para mañana en formato: "Mañana sábado, 06-09-2025"
+        tomorrow = datetime.datetime.now(TZ).date() + datetime.timedelta(days=1)
+        tomorrow_str = tomorrow.strftime("%d-%m-%Y")
 
-            if not fecha or not horario or not nombre_equipo or not canales:
-                continue
+        # Encuentra el bloque con la fecha de mañana
+        blocks = soup.find_all("div", string=lambda s: s and tomorrow_str in s)
+        if not blocks:
+            # Alternativamente busca por el texto "Mañana"
+            blocks = soup.find_all("div", string=lambda s: s and "Mañana" in s)
+        # Si no hay bloques, busca la tabla principal y extrae todos los eventos
+        if blocks:
+            # Encuentra la tabla de eventos después del encabezado
+            for block in blocks:
+                table = block.find_next("table")
+                if not table:
+                    continue
+                rows = table.find_all("tr")
+                for row in rows:
+                    cols = row.find_all("td")
+                    if len(cols) < 3:
+                        continue
+                    hora = cols[0].get_text(strip=True)
+                    equipos = cols[1].get_text(separator=" vs ", strip=True)
+                    canales = cols[2].get_text(separator=", ", strip=True)
+                    eventos.append({
+                        "fecha": tomorrow_str,
+                        "hora": hora,
+                        "nombre": equipos,
+                        "canales": canales
+                    })
+        else:
+            # Modo alternativo: buscar todos los horarios y equipos en la tabla principal
+            tables = soup.find_all("table")
+            for table in tables:
+                rows = table.find_all("tr")
+                for row in rows:
+                    cols = row.find_all("td")
+                    if len(cols) < 3:
+                        continue
+                    hora = cols[0].get_text(strip=True)
+                    equipos = cols[1].get_text(separator=" vs ", strip=True)
+                    canales = cols[2].get_text(separator=", ", strip=True)
+                    eventos.append({
+                        "fecha": tomorrow_str,
+                        "hora": hora,
+                        "nombre": equipos,
+                        "canales": canales
+                    })
 
-            # La fecha de los eventos
-            fecha_evento = datetime.datetime.strptime(fecha.get_text(strip=True), "%d-%m-%Y").date().replace(year=tomorrow.year)  # Convertimos la fecha a formato de fecha
-            
-            # Filtrar solo los eventos del día siguiente
-            if fecha_evento != tomorrow:
-                continue
-
-            eventos.append({
-                "fecha": fecha.get_text(strip=True),
-                "hora": horario.get_text(strip=True),
-                "nombre": nombre_equipo.get_text(strip=True),
-                "canales": canales.get_text(strip=True),  # Los canales que transmiten
-            })
-
-        await browser.close()  # Cerrar el navegador al terminar
+        await browser.close()
+        logging.info(f"Eventos obtenidos: {eventos}")
         return eventos
+
+# --- Comando para enviar el HTML por Telegram ---
+async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    html_path = "/tmp/cartelera.html"
+    if os.path.exists(html_path):
+        try:
+            await update.message.reply_document(document=InputFile(html_path), caption="HTML cartelera para depuración.")
+        except Exception as e:
+            await update.message.reply_text(f"Error al enviar HTML: {e}")
+    else:
+        await update.message.reply_text("No se encontró el archivo de cartelera.")
 
 # --- Envío de eventos del día siguiente al canal EVENTOS DEPORTIVOS ---
 async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
-    eventos = await scrape_cartelera()  # Llamamos a la función asíncrona
+    eventos = await scrape_cartelera()
     if not eventos:
         await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text="No hay eventos deportivos programados para mañana.")
         return
@@ -85,13 +124,17 @@ async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
 
 # --- Comando /cartelera manual ---
 async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    eventos = await scrape_cartelera()  # Llamamos a la función asíncrona
-    if not eventos:
-        await update.message.reply_text("No hay eventos deportivos programados para mañana.")
-        return
-    for evento in eventos:
-        texto = f"📅 *{evento['fecha']}*\n*{evento['hora']}*\n_{evento['nombre']}_\nCanales: {evento['canales']}"
-        await update.message.reply_text(texto, parse_mode="Markdown")
+    try:
+        eventos = await scrape_cartelera()
+        if not eventos:
+            await update.message.reply_text("No hay eventos deportivos programados para mañana.")
+            return
+        for evento in eventos:
+            texto = f"📅 *{evento['fecha']}*\n*{evento['hora']}*\n_{evento['nombre']}_\nCanales: {evento['canales']}"
+            await update.message.reply_text(texto, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Error: {str(e)}")
+        logging.error(f"Error en /cartelera: {e}")
 
 # --- Modo noche manual ---
 async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -130,7 +173,7 @@ async def desactivar_modo_noche(context: ContextTypes.DEFAULT_TYPE):
     await context.bot.set_chat_permissions(GENERAL_CHAT_ID, permissions=permisos)
     await context.bot.send_message(GENERAL_CHAT_ID, text="☀️ ¡Fin del modo noche! Ya pueden enviar mensajes.")
 
-# --- Saludo según hora ---
+# --- Saludo según hora (zona horaria Chile) ---
 def obtener_saludo():
     hora = datetime.datetime.now(TZ).hour
     if 6 <= hora < 12:
@@ -211,6 +254,7 @@ def main():
 
     # Comandos
     application.add_handler(CommandHandler("cartelera", cartelera))
+    application.add_handler(CommandHandler("htmlcartelera", enviar_html))
     application.add_handler(CommandHandler("noche", modo_noche_manual))
     application.add_handler(CommandHandler("ayuda", ayuda))
 
@@ -225,7 +269,6 @@ def main():
         time=datetime.time(hour=8, minute=0, tzinfo=TZ),
         name="desactivar_modo_noche"
     )
-    # Eventos deportivos diario, canal eventos
     application.job_queue.run_daily(
         enviar_eventos_diarios,
         time=datetime.time(hour=10, minute=0, tzinfo=TZ),
