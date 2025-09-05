@@ -10,12 +10,11 @@ from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandl
 # --- CONFIGURACIÓN ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 ADMIN_IDS = [5032964793]
-GENERAL_CHAT_ID = "-2421748184"      # Grupo principal D.N.A TV
-GROUP_ID = "-2421748184"             # Igual que GENERAL_CHAT_ID
-CANAL_EVENTOS_ID = "-1002421748184"  # Canal EVENTOS DEPORTIVOS
+GENERAL_CHAT_ID = "-2421748184"
+CANAL_EVENTOS_ID = "-1002421748184"
 
 CARTELERA_URL = "https://www.futbolenvivochile.com/"
-TZ = pytz.timezone("America/Santiago")  # Usar horario de Chile
+TZ = pytz.timezone("America/Santiago")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -36,22 +35,11 @@ async def scrape_cartelera():
             return {}
 
         html = await page.content()
-
-        # Guardar HTML para depuración
-        html_path = "/tmp/cartelera.html"
-        try:
-            with open(html_path, "w", encoding="utf-8") as f:
-                f.write(html)
-        except Exception as e:
-            logging.error(f"Error guardando HTML: {e}")
-
         soup = BeautifulSoup(html, "html.parser")
         
-        # --- Lógica robusta para captar solo eventos debajo de la fecha de mañana y agrupar por campeonato ---
         tomorrow = datetime.datetime.now(TZ).date() + datetime.timedelta(days=1)
         tomorrow_str = tomorrow.strftime("%d-%m-%Y")
 
-        # Busca el encabezado con la fecha de forma robusta (ignorando espacios, mayúsculas/minúsculas)
         fecha_header = None
         for tag in soup.find_all(text=True):
             if "mañana" in tag.lower() and tomorrow_str in tag:
@@ -68,19 +56,16 @@ async def scrape_cartelera():
 
         while current:
             txt = current.get_text(strip=True)
-            # Si encontramos otro encabezado de fecha, detenemos (robusto para otras fechas)
             if any(day in txt.lower() for day in [
                 "hoy", "mañana", "domingo", "lunes", "martes", "miércoles", "jueves", "viernes"
             ]) and tomorrow_str not in txt:
                 break
 
-            # Detecta bloque de campeonato (usando su estilo, clase, o si es un div con fondo)
             if current.name == "div" and (
                 "background" in current.get("style", "") or current.get("class")
             ):
                 campeonato_actual = txt
                 campeonatos[campeonato_actual] = []
-            # Detecta filas de eventos
             if current.name == "tr":
                 cols = current.find_all("td")
                 if len(cols) >= 3:
@@ -98,12 +83,8 @@ async def scrape_cartelera():
         logging.info(f"Eventos obtenidos: {campeonatos}")
         return campeonatos
 
-# --- Comando para enviar el HTML por Telegram ---
+# --- Comando para enviar el HTML como texto ---
 async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    html_path = "cartelera.html"
-    if os.path.exists(html_path):
-async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
@@ -112,9 +93,7 @@ async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await page.wait_for_timeout(5000)
             html = await page.content()
             await browser.close()
-            # Envía solo los primeros 4000 caracteres (límite Telegram)
             await update.message.reply_text(html[:4000])
-            # Si quieres más, puedes dividir el HTML en partes:
             # for i in range(4000, len(html), 4000):
             #     await update.message.reply_text(html[i:i+4000])
     except Exception as e:
@@ -149,7 +128,6 @@ async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for evento in eventos:
                 mensaje += f"📅 *{evento['fecha']}* - *{evento['hora']}*\n_{evento['nombre']}_\nCanales: {evento['canales']}\n\n"
             mensajes.append(mensaje)
-        # Envía cada campeonato como un mensaje separado (evita el límite de tamaño de Telegram)
         for texto in mensajes:
             await update.message.reply_text(texto, parse_mode="Markdown")
     except Exception as e:
@@ -268,13 +246,12 @@ async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(texto)
 
-# --- MAIN ---
 def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
     # Comandos
     application.add_handler(CommandHandler("cartelera", cartelera))
-    application.add_handler(CommandHandler("htmlcartelera", enviar_html))  # Nuevo comando para enviar HTML
+    application.add_handler(CommandHandler("htmlcartelera", enviar_html))
     application.add_handler(CommandHandler("noche", modo_noche_manual))
     application.add_handler(CommandHandler("ayuda", ayuda))
 
