@@ -2,3 +2,4 @@ python-telegram-bot[job-queue,webhooks]>=20.0
 beautifulsoup4
 requests
 playwright
+pytz
