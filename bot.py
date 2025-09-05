@@ -102,18 +102,23 @@ async def scrape_cartelera():
 async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
     html_path = "cartelera.html"
     if os.path.exists(html_path):
-        try:
-            with open(html_path, "r", encoding="utf-8") as f:
-                html = f.read()
+async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.goto(CARTELERA_URL, timeout=120000)
+            await page.wait_for_timeout(5000)
+            html = await page.content()
+            await browser.close()
             # Envía solo los primeros 4000 caracteres (límite Telegram)
             await update.message.reply_text(html[:4000])
-            # Si deseas enviar más, puedes dividir y enviar en partes:
+            # Si quieres más, puedes dividir el HTML en partes:
             # for i in range(4000, len(html), 4000):
             #     await update.message.reply_text(html[i:i+4000])
-        except Exception as e:
-            await update.message.reply_text(f"Error al leer y enviar HTML: {e}")
-    else:
-        await update.message.reply_text("No se encontró el archivo de cartelera.")
+    except Exception as e:
+        await update.message.reply_text(f"Error al obtener HTML: {e}")
 
 # --- Envío de eventos del día siguiente al canal EVENTOS DEPORTIVOS ---
 async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
