@@ -9,7 +9,6 @@ from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandl
 
 # --- CONFIGURACIÓN ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-ADMIN_IDS = [5032964793]
 GENERAL_CHAT_ID = "-2421748184"  # https://t.me/c/2421748184/1
 CANAL_EVENTOS_ID = "-1002421748184"  # https://t.me/c/2421748184/1396
 
@@ -185,7 +184,11 @@ async def enviar_texto_body(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- MODO NOCHE MANUAL ---
 async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
+    user_id = update.effective_user.id
+    # Identifica administradores automáticamente
+    chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
+    admin_ids = [admin.user.id for admin in chat_admins]
+    if user_id not in admin_ids:
         await update.message.reply_text("Solo el administrador puede activar el modo noche manualmente.")
         return
     await activar_modo_noche(context, update.effective_chat.id)
@@ -233,7 +236,6 @@ def obtener_saludo():
 # --- MENSAJE BIENVENIDA ---
 async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_member = update.chat_member
-    # Solo si hay nuevos miembros
     if chat_member.new_chat_members:
         for member in chat_member.new_chat_members:
             nombre = member.first_name if member.first_name else ""
@@ -267,12 +269,21 @@ async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE
     hora = datetime.datetime.now(TZ).hour
     if 23 <= hora or hora < 8:
         user_id = update.effective_user.id
-        if user_id in ADMIN_IDS:
+        # Identifica administradores automáticamente
+        chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
+        admin_ids = [admin.user.id for admin in chat_admins]
+        if user_id in admin_ids:
             return
         await update.message.delete()
 
 # --- RESPUESTA GENERAL EN GRUPO ---
 async def respuesta_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    # Identifica administradores automáticamente
+    chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
+    admin_ids = [admin.user.id for admin in chat_admins]
+    if user_id in admin_ids:
+        return
     hora = datetime.datetime.now(TZ).hour
     if 8 <= hora < 23:
         saludo = obtener_saludo()
