@@ -10,7 +10,9 @@ from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandl
 # --- CONFIGURACIÓN ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GENERAL_CHAT_ID = "-2421748184"
-CANAL_EVENTOS_ID = "-1002421748184"
+# El ID del canal EVENTOS DEPORTIVOS debe ser negativo, extraído del link de Telegram: https://t.me/c/2421748184/1396
+# El link tiene la forma /c/2421748184/..., así que el ID es -1002421748184
+CANAL_EVENTOS_ID = -1002421748184
 CARTELERA_URL = "https://www.futbolenvivochile.com/"
 TZ = pytz.timezone("America/Santiago")
 
@@ -132,11 +134,10 @@ async def send_long_message(bot, chat_id, text, parse_mode=None):
 # --- COMANDO /cartelera: Muestra partidos en dos mensajes, día actual y siguiente ---
 async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # Detecta si el mensaje proviene de chat privado
+        # Si el mensaje es privado, responde allí; si no, manda SIEMPRE al canal EVENTOS DEPORTIVOS
         if update.effective_chat.type == "private":
             destino = update.effective_chat.id
         else:
-            # Siempre responde en CANAL_EVENTOS_ID si no es privado
             destino = CANAL_EVENTOS_ID
 
         hoy, manana = dias_a_mostrar()
@@ -158,8 +159,8 @@ async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await context.bot.send_message(chat_id=destino, text="No hay partidos para mañana.")
 
-        # Si el comando se ejecutó en un grupo/canal distinto, avisa al usuario que la cartelera fue enviada a EVENTOS DEPORTIVOS
-        if update.effective_chat.type != "private" and update.effective_chat.id != int(CANAL_EVENTOS_ID):
+        # Si el comando no fue por privado, avisa en el grupo
+        if update.effective_chat.type != "private":
             await update.message.reply_text("La cartelera fue enviada al canal EVENTOS DEPORTIVOS.")
 
     except Exception as e:
