@@ -6,11 +6,10 @@ from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 PORT = int(os.environ.get('PORT', '8080'))
-WEBHOOK_PATH = f"/webhook/{TOKEN[:10]}"  # Un path privado por seguridad básica
+WEBHOOK_PATH = f"/webhook/{TOKEN[:10]}"
 
 GRUPO_NOMBRE = "D.N.A. TV"
 CANAL_GENERAL = "General"
-
 HORA_INICIO_NOCHE = 23
 HORA_FIN_NOCHE = 8
 
@@ -22,9 +21,7 @@ def es_general(update: Update):
     return getattr(chat, "title", None) == CANAL_GENERAL and chat.type in ["supergroup", "group"]
 
 async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("Handler: bienvenida")
-    if not es_general(update):
-        return
+    if not es_general(update): return
     for usuario in update.message.new_chat_members:
         mensaje = (
             f"👋🎉 {usuario.first_name} BIENVENIDO(A) A NUESTRO SELECTO GRUPO, MANTENTE SIEMPRE AL DIA Y ACTUALIZADO 😎🤖\n\n"
@@ -33,18 +30,14 @@ async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(mensaje)
 
 async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("Handler: despedida")
-    if not es_general(update):
-        return
+    if not es_general(update): return
     usuario = update.message.left_chat_member
     mensaje = f"👋 CHAO {usuario.first_name}, DESPUÉS NO PIDAS AYUDA 🤷🏻‍♂️"
     await update.message.reply_text(mensaje)
 
 async def modo_noche(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global modo_noche_avisado
-    print("Handler: modo_noche")
-    if not es_general(update):
-        return
+    if not es_general(update): return
     now = datetime.now()
     if now.hour >= HORA_INICIO_NOCHE or now.hour < HORA_FIN_NOCHE:
         if not modo_noche_avisado:
@@ -68,7 +61,6 @@ async def modo_noche(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def aviso_fin_modo_noche(context: ContextTypes.DEFAULT_TYPE):
     global modo_dia_avisado
-    print("Job: aviso_fin_modo_noche")
     app = context.application
     now = datetime.now()
     if now.hour == HORA_FIN_NOCHE and not modo_dia_avisado:
@@ -83,9 +75,7 @@ async def aviso_fin_modo_noche(context: ContextTypes.DEFAULT_TYPE):
         modo_dia_avisado = False
 
 async def saludo_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("Handler: saludo_general")
-    if not es_general(update):
-        return
+    if not es_general(update): return
     now = datetime.now()
     saludo = "¡Buenos días!" if now.hour < 12 else "¡Buenas tardes!"
     await update.message.reply_text(
@@ -93,15 +83,12 @@ async def saludo_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def ayuda_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("Handler: ayuda_general")
-    if not es_general(update):
-        return
+    if not es_general(update): return
     await update.message.reply_text(
         "En un momento te atenderá el administrador, mientras tanto verifica el tema ACTUALIZACIONES DE APPS GRATUITAS, puede que encuentres lo que buscas."
     )
 
 async def saludo_privado(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("Handler: saludo_privado (mensaje privado recibido)", update.message)
     now = datetime.now()
     saludo = "¡Buenos días!" if now.hour < 12 else "¡Buenas tardes!"
     await update.message.reply_text(
@@ -109,7 +96,7 @@ async def saludo_privado(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def main():
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).job_queue().build()  # <-- ¡ACTIVA EL JOB QUEUE!
     regex_ayuda = re.compile(r'^ayuda$', re.IGNORECASE)
 
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE, saludo_privado))
@@ -120,7 +107,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT, saludo_general))
     app.job_queue.run_repeating(aviso_fin_modo_noche, interval=60, first=0)
 
-    # ---------- WEBHOOK CONFIG ----------
     url_base = os.environ.get('WEBHOOK_BASE', '')
     webhook_url = f"{url_base}{WEBHOOK_PATH}"
     print(f"Usando webhook URL: {webhook_url}")
@@ -128,8 +114,7 @@ def main():
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
-        webhook_url=webhook_url,
-        webhook_path=WEBHOOK_PATH
+        webhook_url=webhook_url
     )
 
 if __name__ == "__main__":
