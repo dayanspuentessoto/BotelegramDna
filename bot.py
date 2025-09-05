@@ -29,28 +29,42 @@ async def scrape_cartelera():
             page = await browser.new_page()
             await page.goto(CARTELERA_URL)
 
-            # Aumentamos el tiempo de espera y esperamos por un selector diferente
-            await page.wait_for_selector("div.cartelera_fecha", timeout=60000)  # Esperar hasta 60 segundos
+            # Esperamos que la página cargue completamente
+            await page.wait_for_selector("div.cartelera_fecha", timeout=60000)
 
             # Obtener el contenido de la página después de cargar JavaScript
             html = await page.content()
             soup = BeautifulSoup(html, "html.parser")
 
             eventos = []
+
+            # Buscar cada bloque de evento
             for bloque_fecha in soup.find_all("div", class_="cartelera_fecha"):
                 fecha = bloque_fecha.get_text(strip=True)
                 bloque_eventos = bloque_fecha.find_next_sibling("div", class_="cartelera_eventos")
+                
                 if not bloque_eventos:
                     continue
+
+                # Extraemos cada evento dentro del bloque
                 for evento in bloque_eventos.find_all("div", class_="cartelera_evento"):
+                    # Hora del evento
                     hora = evento.find("div", class_="cartelera_hora")
+                    hora_texto = hora.get_text(strip=True) if hora else ""
+
+                    # Nombre del evento
                     nombre = evento.find("div", class_="cartelera_nombre")
+                    nombre_texto = nombre.get_text(strip=True) if nombre else ""
+
+                    # Canal/plataforma que transmite el evento
                     logo_img = evento.find("img")
+                    logo_url = logo_img['src'] if logo_img and logo_img.has_attr('src') else ""
+
                     eventos.append({
                         "fecha": fecha,
-                        "hora": hora.get_text(strip=True) if hora else "",
-                        "nombre": nombre.get_text(strip=True) if nombre else "",
-                        "logo": logo_img['src'] if logo_img and logo_img.has_attr('src') else ""
+                        "hora": hora_texto,
+                        "nombre": nombre_texto,
+                        "logo": logo_url
                     })
 
             await browser.close()  # Cerrar el navegador al terminar
