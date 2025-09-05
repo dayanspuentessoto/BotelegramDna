@@ -10,10 +10,9 @@ from telegram.ext import Application, MessageHandler, CommandHandler, filters, C
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 PORT = int(os.environ.get('PORT', '8080'))
 
-# Configuración de nombres de grupo/canales y chat_id EVENTOS DEPORTIVOS
 GRUPO_NOMBRE = "D.N.A. TV"
 CANAL_GENERAL = "General"
-ID_EVENTOS_DEPORTIVOS = -1002421748184  # chat_id del canal EVENTOS DEPORTIVOS
+ID_EVENTOS_DEPORTIVOS = -1002421748184
 URL_CARTELERA = "https://www.emol.com/movil/deportes/carteleradirecttv/index.aspx"
 
 HORA_INICIO_NOCHE = 23
@@ -21,6 +20,8 @@ HORA_FIN_NOCHE = 8
 
 modo_noche_avisado = False
 modo_dia_avisado = False
+
+ADMIN_USER_ID = 5032964793  # Tu user ID
 
 def es_general(update: Update):
     chat = update.message.chat
@@ -165,20 +166,50 @@ async def comando_cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cartelera = extraer_cartelera_deportiva()
     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"🏅 Cartelera deportiva de hoy y mañana:\n\n{cartelera}")
 
+# ---- NUEVO COMANDO SOLO PARA TI ----
+async def activar_modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID:
+        await update.message.reply_text("⛔ Solo el administrador puede activar el modo noche manualmente.")
+        return
+    chat = update.effective_chat
+    if getattr(chat, "title", None) != CANAL_GENERAL:
+        await update.message.reply_text("Este comando solo puede usarse en el canal General.")
+        return
+
+    now = datetime.now(ZoneInfo("America/Santiago"))
+    until_time = datetime.combine(now.date(), time(HORA_FIN_NOCHE), tzinfo=ZoneInfo("America/Santiago"))
+    if now.hour >= HORA_INICIO_NOCHE:
+        until_time += timedelta(days=1)
+    try:
+        # Restringe a todos los usuarios excepto administradores
+        admin_ids = {admin.user.id for admin in await context.bot.get_chat_administrators(chat.id)}
+        async for member in context.bot.get_chat_members(chat.id):
+            if member.user.id not in admin_ids:
+                await context.bot.restrict_chat_member(
+                    chat_id=chat.id,
+                    user_id=member.user.id,
+                    permissions=ChatPermissions(can_send_messages=False),
+                    until_date=until_time
+                )
+        await update.message.reply_text(
+            "🌙 El canal General ha entrado en MODO NOCHE MANUAL: no se podrán enviar mensajes hasta las 08:00"
+        )
+    except Exception as e:
+        print(f"Error en activar_modo_noche_manual: {e}")
+        await update.message.reply_text("Hubo un error activando el modo noche.")
+
 def main():
     app = Application.builder().token(TOKEN).build()
     regex_ayuda = re.compile(r'^ayuda$', re.IGNORECASE)
 
-    # --- ÓPTIMA SECUENCIA DE HANDLERS ---
-    app.add_handler(CommandHandler("cartelera", comando_cartelera))  # Comando debe ir primero
-
+    app.add_handler(CommandHandler("activar_noche", activar_modo_noche_manual))  # <--- NUEVO handler
+    app.add_handler(CommandHandler("cartelera", comando_cartelera))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE, saludo_privado))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, bienvenida))
     app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, despedida))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.StatusUpdate.ALL, modo_noche))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(regex_ayuda), ayuda_general))
     app.add_handler(MessageHandler(filters.TEXT, saludo_general))
-    # -------------------------------------
 
     app.job_queue.run_repeating(aviso_fin_modo_noche, interval=60, first=0)
     app.job_queue.run_daily(enviar_cartelera_deportiva, time(hour=10, minute=0, tzinfo=ZoneInfo("America/Santiago")))
