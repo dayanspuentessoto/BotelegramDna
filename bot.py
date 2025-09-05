@@ -1,7 +1,5 @@
 import os
 import logging
-import datetime
-from zoneinfo import ZoneInfo
 import requests
 from bs4 import BeautifulSoup
 from telegram import Update
@@ -11,15 +9,14 @@ from telegram.ext import (
 
 # --- CONFIGURACIÓN ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CARTELERA_URL = "https://www.emol.com/movil/deportes/carteleradirecttv/index.aspx"
-TZ = ZoneInfo("America/Santiago")
 
+# Fuente alternativa: TV Sports Guide Chile
+CARTELERA_URL = "https://www.tvsportsguide.com/chile/"
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
-# --- Scraping Cartelera con depuración HTML ---
-def scrape_cartelera():
+def scrape_tvsportsguide():
     url = CARTELERA_URL
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -30,54 +27,41 @@ def scrape_cartelera():
         resp = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(resp.text, "html.parser")
         eventos = []
-        fechas_encontradas = soup.find_all("div", class_="cartelera_fecha")
-        # Si no hay fechas, devuelve el HTML en el evento 'nombre'
-        if not fechas_encontradas:
-            return [{"fecha": "", "hora": "", "nombre": resp.text[:4000], "logo": ""}]
-        for bloque_fecha in fechas_encontradas:
-            fecha = bloque_fecha.get_text(strip=True)
-            bloque_eventos = bloque_fecha.find_next_sibling("div", class_="cartelera_eventos")
-            if not bloque_eventos:
-                continue
-            eventos_evento = bloque_eventos.find_all("div", class_="cartelera_evento")
-            for evento in eventos_evento:
-                hora = evento.find("div", class_="cartelera_hora")
-                nombre = evento.find("div", class_="cartelera_nombre")
-                logo_img = evento.find("img")
-                eventos.append({
-                    "fecha": fecha,
-                    "hora": hora.get_text(strip=True) if hora else "",
-                    "nombre": nombre.get_text(strip=True) if nombre else "",
-                    "logo": logo_img['src'] if logo_img and logo_img.has_attr('src') else ""
-                })
+        # Cada evento está en <li class="event">
+        for li in soup.find_all("li", class_="event"):
+            hora = li.find("span", class_="time")
+            nombre = li.find("span", class_="name")
+            canal = li.find("span", class_="channel")
+            deporte = li.find("span", class_="sport")
+            # Extrae la info, si falta algo lo deja vacío
+            eventos.append({
+                "hora": hora.get_text(strip=True) if hora else "",
+                "nombre": nombre.get_text(strip=True) if nombre else "",
+                "canal": canal.get_text(strip=True) if canal else "",
+                "deporte": deporte.get_text(strip=True) if deporte else ""
+            })
         return eventos
     except Exception as e:
-        return [{"fecha": "", "hora": "", "nombre": f"Error scrape_cartelera: {e}", "logo": ""}]
+        return [{"hora": "", "nombre": f"Error: {e}", "canal": "", "deporte": ""}]
 
-# --- Comando /cartelera manual con depuración ---
 async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    eventos = scrape_cartelera()
-    await update.message.reply_text(f"Eventos encontrados: {len(eventos)}")
-    # Si el primero es solo HTML, mándalo como texto preformateado
-    if len(eventos) == 1 and eventos[0]["fecha"] == "":
-        await update.message.reply_text(f"HTML recibido:\n{eventos[0]['nombre']}")
+    eventos = scrape_tvsportsguide()
+    if not eventos or (len(eventos) == 1 and eventos[0]["nombre"].startswith("Error")):
+        await update.message.reply_text("No se pudo obtener la cartelera deportiva o ocurrió un error.")
+        if eventos:
+            await update.message.reply_text(eventos[0]["nombre"])
         return
-    if not eventos:
-        await update.message.reply_text("No hay eventos deportivos programados para hoy y mañana.")
-        return
-    for evento in eventos[:10]:  # limita a 10 eventos por prueba
-        texto = f"📅 *{evento['fecha']}*\n*{evento['hora']}*\n_{evento['nombre']}_"
-        if evento['logo']:
-            await context.bot.send_photo(
-                chat_id=update.effective_chat.id,
-                photo=evento['logo'],
-                caption=texto,
-                parse_mode="Markdown"
-            )
-        else:
-            await update.message.reply_text(texto, parse_mode="Markdown")
+    await update.message.reply_text(f"Eventos deportivos hoy en Chile: {len(eventos)} encontrados.")
+    # Muestra hasta 12 eventos (puedes cambiar el número)
+    for evento in eventos[:12]:
+        texto = (
+            f"🕒 {evento['hora']}\n"
+            f"🏟️ {evento['nombre']}\n"
+            f"📺 Canal: {evento['canal']}\n"
+            f"⚽ Deporte: {evento['deporte']}"
+        )
+        await update.message.reply_text(texto)
 
-# --- MAIN SOLO CON /cartelera ---
 def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("cartelera", cartelera))
