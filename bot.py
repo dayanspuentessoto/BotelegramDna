@@ -1,228 +1,222 @@
 import os
-import re
+import logging
+import datetime
+from zoneinfo import ZoneInfo
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime, time, timedelta
-from zoneinfo import ZoneInfo
 from telegram import Update, ChatPermissions
-from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
+from telegram.ext import (
+    Application, ContextTypes, CommandHandler, MessageHandler, filters, ChatMemberHandler
+)
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-PORT = int(os.environ.get('PORT', '8080'))
+# --- CONFIGURACIÓN ---
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+ADMIN_IDS = [5032964793]  # Tu ID de usuario de Telegram, agrega más si tienes otros admins
+GROUP_ID = int(os.environ.get("GROUP_ID", "-100XXXXXXXXX"))  # Ajusta tu id real si lo necesitas
+GENERAL_CHAT_ID = int(os.environ.get("GENERAL_CHAT_ID", "-100XXXXXXXXX"))  # Ajusta tu id real si lo necesitas
 
-GRUPO_NOMBRE = "D.N.A. TV"
-CANAL_GENERAL = "General"
-ID_EVENTOS_DEPORTIVOS = -1002421748184
-URL_CARTELERA = "https://www.emol.com/movil/deportes/carteleradirecttv/index.aspx"
+CARTELERA_URL = "https://www.emol.com/movil/deportes/carteleradirecttv/index.aspx"
+TZ = ZoneInfo("America/Santiago")
 
-HORA_INICIO_NOCHE = 23
-HORA_FIN_NOCHE = 8
 
-modo_noche_avisado = False
-modo_dia_avisado = False
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
 
-ADMIN_USER_ID = 5032964793  # Tu user ID
-
-def es_general(update: Update):
-    chat = update.message.chat
-    return getattr(chat, "title", None) == CANAL_GENERAL and chat.type in ["supergroup", "group"]
-
-async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not es_general(update):
-        return
-    for usuario in update.message.new_chat_members:
-        mensaje = (
-            f"👋🎉 {usuario.first_name} BIENVENIDO(A) A NUESTRO SELECTO GRUPO, MANTENTE SIEMPRE AL DIA Y ACTUALIZADO 😎🤖\n\n"
-            "Reglas del grupo:\n- Ser siempre amables con todos los integrantes.\n- Pedir las cosas con respeto."
-        )
-        await update.message.reply_text(mensaje)
-
-async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not es_general(update):
-        return
-    usuario = update.message.left_chat_member
-    mensaje = f"👋 CHAO {usuario.first_name}, DESPUÉS NO PIDAS AYUDA 🤷🏻‍♂️"
-    await update.message.reply_text(mensaje)
-
-async def modo_noche(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global modo_noche_avisado
-    if not es_general(update):
-        return
-    now = datetime.now(ZoneInfo("America/Santiago"))
-    if now.hour >= HORA_INICIO_NOCHE or now.hour < HORA_FIN_NOCHE:
-        if not modo_noche_avisado:
-            await update.message.reply_text("🌙 El canal General ha entrado en MODO NOCHE: no se podrán enviar mensajes hasta las 08:00")
-            modo_noche_avisado = True
-        until_time = datetime.combine(now.date(), time(HORA_FIN_NOCHE), tzinfo=ZoneInfo("America/Santiago"))
-        if now.hour >= HORA_INICIO_NOCHE:
-            until_time += timedelta(days=1)
-        try:
-            await context.bot.restrict_chat_member(
-                chat_id=update.message.chat.id,
-                user_id=update.message.from_user.id,
-                permissions=ChatPermissions(can_send_messages=False),
-                until_date=until_time
-            )
-            await update.message.reply_text(f"⛔ {update.message.from_user.first_name}, no se permite enviar mensajes hasta las 08:00")
-        except Exception as e:
-            print(f"Error en modo_noche: {e}")
-    else:
-        modo_noche_avisado = False
-
-async def aviso_fin_modo_noche(context: ContextTypes.DEFAULT_TYPE):
-    global modo_dia_avisado
-    app = context.application
-    now = datetime.now(ZoneInfo("America/Santiago"))
-    if now.hour == HORA_FIN_NOCHE and not modo_dia_avisado:
-        for update in await app.bot.get_updates():
-            if hasattr(update, 'message'):
-                chat = update.message.chat
-                if es_general(update):
-                    await app.bot.send_message(chat_id=chat.id,
-                        text="☀️ El modo noche ha terminado. ¡Ya puedes enviar mensajes! 😎")
-                    modo_dia_avisado = True
-    elif now.hour != HORA_FIN_NOCHE:
-        modo_dia_avisado = False
-
-async def saludo_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not es_general(update):
-        return
-    now = datetime.now(ZoneInfo("America/Santiago"))
-    hora = now.hour
-    if 6 <= hora < 12:
-        saludo = "¡Buenos días!"
-    elif 12 <= hora < 20:
-        saludo = "¡Buenas tardes!"
-    else:
-        saludo = "¡Buenas noches!"
-    await update.message.reply_text(
-        f"{saludo} Soy el bot del canal General de D.N.A. TV. Si necesitas recomendación, escribe 'ayuda'."
-    )
-
-async def ayuda_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not es_general(update):
-        return
-    await update.message.reply_text(
-        "En un momento te atenderá el administrador, mientras tanto verifica el tema ACTUALIZACIONES DE APPS GRATUITAS, puede que encuentres lo que buscas."
-    )
-
-async def saludo_privado(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    now = datetime.now(ZoneInfo("America/Santiago"))
-    hora = now.hour
-    if 6 <= hora < 12:
-        saludo = "¡Buenos días!"
-    elif 12 <= hora < 20:
-        saludo = "¡Buenas tardes!"
-    else:
-        saludo = "¡Buenas noches!"
-    await update.message.reply_text(
-        f"{saludo} Soy un bot, no tengo todas las respuestas. Si necesitas ayuda, por favor contáctate con el administrador."
-    )
-
-def extraer_cartelera_deportiva():
-    tz = ZoneInfo("America/Santiago")
-    hoy = datetime.now(tz).date()
-    manana = hoy + timedelta(days=1)
-    meses = {
-        1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
-        7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
-    }
-    def formatea_fecha(dt):
-        return f"{dt.day} de {meses[dt.month]}"
-    dias_a_incluir = {formatea_fecha(hoy), formatea_fecha(manana)}
+# --- Scraping Cartelera ---
+async def scrape_cartelera(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     try:
-        resp = requests.get(URL_CARTELERA, timeout=10)
-        resp.raise_for_status()
+        resp = requests.get(CARTELERA_URL, timeout=10)
         soup = BeautifulSoup(resp.text, "html.parser")
+        eventos_encontrados = False
 
-        eventos = []
-        bloques_fecha = soup.find_all("div", class_="cartelera_fecha")
-        for bloque_fecha in bloques_fecha:
-            fecha_texto = bloque_fecha.get_text(strip=True)
-            if any(dia in fecha_texto for dia in dias_a_incluir):
-                bloque_eventos = bloque_fecha.find_next_sibling("div", class_="cartelera_eventos")
-                for evento in bloque_eventos.find_all("div", class_="cartelera_evento"):
-                    hora = evento.find("div", class_="cartelera_hora")
-                    nombre = evento.find("div", class_="cartelera_nombre")
-                    canal = evento.find("div", class_="cartelera_canal")
-                    logo = evento.find("img")
-                    logo_txt = logo["alt"] if logo and logo.has_attr("alt") else ""
-                    canal_txt = canal.get_text(strip=True) if canal else ""
-                    eventos.append(
-                        f"📅 {fecha_texto}\n🕒 {hora.get_text(strip=True) if hora else ''}\n"
-                        f"🏟️ {nombre.get_text(strip=True) if nombre else ''}\n"
-                        f"📺 Canal: {canal_txt} ({logo_txt})"
-                    )
-        return "\n\n".join(eventos) if eventos else "No hay eventos deportivos programados para hoy y mañana."
+        for bloque_fecha in soup.find_all("div", class_="cartelera_fecha"):
+            fecha = bloque_fecha.get_text(strip=True)
+            await context.bot.send_message(chat_id=chat_id, text=f"📅 {fecha}")
+
+            bloque_eventos = bloque_fecha.find_next_sibling("div", class_="cartelera_eventos")
+            if not bloque_eventos:
+                continue
+
+            for evento in bloque_eventos.find_all("div", class_="cartelera_evento"):
+                hora = evento.find("div", class_="cartelera_hora")
+                hora_txt = hora.get_text(strip=True) if hora else ""
+
+                nombre = evento.find("div", class_="cartelera_nombre")
+                nombre_txt = nombre.get_text(strip=True) if nombre else ""
+
+                logo_img = evento.find("img")
+                logo_url = logo_img['src'] if logo_img and logo_img.has_attr('src') else ""
+
+                mensaje = f"🕒 {hora_txt}\n🏟️ {nombre_txt}"
+                await context.bot.send_message(chat_id=chat_id, text=mensaje)
+                if logo_url:
+                    await context.bot.send_photo(chat_id=chat_id, photo=logo_url)
+                eventos_encontrados = True
+
+        if not eventos_encontrados:
+            await context.bot.send_message(chat_id=chat_id, text="No hay eventos deportivos programados para hoy y mañana.")
     except Exception as e:
-        print(f"Error extrayendo cartelera deportiva: {e}")
-        return "No se pudo obtener la cartelera deportiva hoy."
+        await context.bot.send_message(chat_id=chat_id, text=f"Error obteniendo cartelera: {e}")
 
-async def enviar_cartelera_deportiva(context: ContextTypes.DEFAULT_TYPE):
-    cartelera = extraer_cartelera_deportiva()
-    await context.bot.send_message(chat_id=ID_EVENTOS_DEPORTIVOS, text=f"🏅 Cartelera deportiva de hoy y mañana:\n\n{cartelera}")
+# --- Comando /cartelera ---
+async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await scrape_cartelera(context, update.effective_chat.id)
 
-async def comando_cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cartelera = extraer_cartelera_deportiva()
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"🏅 Cartelera deportiva de hoy y mañana:\n\n{cartelera}")
-
-# ---- NUEVO COMANDO SOLO PARA TI ----
-async def activar_modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_USER_ID:
-        await update.message.reply_text("⛔ Solo el administrador puede activar el modo noche manualmente.")
+# --- Comando /noche manual ---
+async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("Solo el administrador puede activar el modo noche manualmente.")
         return
-    chat = update.effective_chat
-    if getattr(chat, "title", None) != CANAL_GENERAL:
-        await update.message.reply_text("Este comando solo puede usarse en el canal General.")
-        return
+    await activar_modo_noche(context, update.effective_chat.id)
+    await update.message.reply_text("Modo noche activado manualmente hasta las 08:00.")
 
-    now = datetime.now(ZoneInfo("America/Santiago"))
-    until_time = datetime.combine(now.date(), time(HORA_FIN_NOCHE), tzinfo=ZoneInfo("America/Santiago"))
-    if now.hour >= HORA_INICIO_NOCHE:
-        until_time += timedelta(days=1)
-    try:
-        # Restringe a todos los usuarios excepto administradores
-        admin_ids = {admin.user.id for admin in await context.bot.get_chat_administrators(chat.id)}
-        async for member in context.bot.get_chat_members(chat.id):
-            if member.user.id not in admin_ids:
-                await context.bot.restrict_chat_member(
-                    chat_id=chat.id,
-                    user_id=member.user.id,
-                    permissions=ChatPermissions(can_send_messages=False),
-                    until_date=until_time
-                )
-        await update.message.reply_text(
-            "🌙 El canal General ha entrado en MODO NOCHE MANUAL: no se podrán enviar mensajes hasta las 08:00"
-        )
-    except Exception as e:
-        print(f"Error en activar_modo_noche_manual: {e}")
-        await update.message.reply_text("Hubo un error activando el modo noche.")
-
-def main():
-    app = Application.builder().token(TOKEN).build()
-    regex_ayuda = re.compile(r'^ayuda$', re.IGNORECASE)
-
-    app.add_handler(CommandHandler("activar_noche", activar_modo_noche_manual))  # <--- NUEVO handler
-    app.add_handler(CommandHandler("cartelera", comando_cartelera))
-    app.add_handler(MessageHandler(filters.ChatType.PRIVATE, saludo_privado))
-    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, bienvenida))
-    app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, despedida))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.StatusUpdate.ALL, modo_noche))
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(regex_ayuda), ayuda_general))
-    app.add_handler(MessageHandler(filters.TEXT, saludo_general))
-
-    app.job_queue.run_repeating(aviso_fin_modo_noche, interval=60, first=0)
-    app.job_queue.run_daily(enviar_cartelera_deportiva, time(hour=10, minute=0, tzinfo=ZoneInfo("America/Santiago")))
-
-    url_base = os.environ.get('WEBHOOK_BASE', '')
-    webhook_url = f"{url_base}/"
-    print(f"Usando webhook URL: {webhook_url}")
-
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        webhook_url=webhook_url
+# --- Modo noche automático ---
+async def activar_modo_noche(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    permisos = ChatPermissions(
+        can_send_messages=False,
+        can_send_media_messages=False,
+        can_send_polls=False,
+        can_send_other_messages=False,
+        can_add_web_page_previews=False,
+        can_change_info=False,
+        can_invite_users=True,
+        can_pin_messages=False,
     )
+    await context.bot.set_chat_permissions(chat_id, permissions=permisos)
+    await context.bot.send_message(chat_id=chat_id, text="🌙 Modo noche activado. El canal queda restringido hasta las 08:00.")
+
+async def desactivar_modo_noche(context: ContextTypes.DEFAULT_TYPE):
+    permisos = ChatPermissions(
+        can_send_messages=True,
+        can_send_media_messages=True,
+        can_send_polls=True,
+        can_send_other_messages=True,
+        can_add_web_page_previews=True,
+        can_change_info=False,
+        can_invite_users=True,
+        can_pin_messages=False,
+    )
+    await context.bot.set_chat_permissions(GENERAL_CHAT_ID, permissions=permisos)
+    await context.bot.send_message(GENERAL_CHAT_ID, text="☀️ ¡Fin del modo noche! Ya pueden enviar mensajes.")
+
+# --- Saludo según hora ---
+def obtener_saludo():
+    hora = datetime.datetime.now(TZ).hour
+    if 6 <= hora < 12:
+        return "¡Buenos días!"
+    elif 12 <= hora < 19:
+        return "¡Buenas tardes!"
+    else:
+        return "¡Buenas noches!"
+
+# --- Mensaje bienvenida ---
+async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    for member in update.chat_member.new_chat_members:
+        nombre = member.full_name if hasattr(member, 'full_name') and member.full_name else \
+            (member.username if member.username else "Usuario")
+        await context.bot.send_message(
+            GENERAL_CHAT_ID,
+            text=f"{nombre} BIENVENIDO(A) A NUESTRO SELECTO GRUPO, MANTENTE SIEMPRE AL DIA Y ACTUALIZADO, SI TIENES ALGUNA DUDA ESCRIBE EL COMANDO AYUDA PARA MAS INFO 😎🤖",
+        )
+
+# --- Mensaje despedida ---
+async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.chat_member.old_chat_member.status not in ['left', 'kicked']:
+        return
+    user = update.chat_member.old_chat_member.user
+    nombre = user.full_name if hasattr(user, 'full_name') and user.full_name else \
+        (user.username if user.username else "Usuario")
+    await context.bot.send_message(
+        GENERAL_CHAT_ID,
+        text=f"{nombre} ADIOS, DESPUES NO RECLAMES NI PREGUNTES🤷🏻‍♂"
+    )
+
+# --- Filtro de mensajes modo noche ---
+async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    hora = datetime.datetime.now(TZ).hour
+    # Solo restringe en modo noche
+    if 23 <= hora or hora < 8:
+        user_id = update.effective_user.id
+        if user_id in ADMIN_IDS:
+            return
+        await update.message.delete()
+
+# --- RESPUESTA automática fuera de modo noche (grupo) ---
+async def respuesta_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    hora = datetime.datetime.now(TZ).hour
+    # Solo responde fuera del modo noche
+    if 8 <= hora < 23:
+        saludo = obtener_saludo()
+        await update.message.reply_text(
+            f"{saludo} 👋 Si necesitas ayuda, escribe el comando /ayuda para recibir información clara sobre cómo contactar al administrador y resolver tus dudas."
+        )
+
+# --- RESPUESTA automática por privado ---
+async def respuesta_privada(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    saludo = obtener_saludo()
+    await update.message.reply_text(
+        f"{saludo} 👋 Soy un bot automático.\n"
+        "Si tienes preguntas o necesitas soporte, por favor contacta directamente al administrador (@tvtv132023-byte).\n"
+        "También puedes escribir /ayuda para ver información y recursos útiles."
+    )
+
+# --- Comando /ayuda ---
+async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    texto = (
+        "👋 ¡Hola! Tu mensaje ha sido recibido.\n"
+        "El administrador se comunicará contigo pronto.\n\n"
+        "Mientras esperas, puedes revisar el canal de actualizaciones de app gratuitas para ver si se resuelven tus dudas:\n"
+        "👉 [Canal de actualizaciones](https://t.me/appgratuita)\n\n"
+        "Si tienes otra pregunta, escríbela aquí. ¡Gracias!"
+    )
+    await update.message.reply_text(texto, parse_mode="Markdown", disable_web_page_preview=True)
+
+# --- MAIN ---
+def main():
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    # Comandos
+    application.add_handler(CommandHandler("cartelera", cartelera))
+    application.add_handler(CommandHandler("noche", modo_noche_manual))
+    application.add_handler(CommandHandler("ayuda", ayuda))
+
+    # Modo noche automático
+    application.job_queue.run_daily(
+        lambda context: activar_modo_noche(context, GENERAL_CHAT_ID),
+        time=datetime.time(hour=23, minute=0, tzinfo=TZ),
+        name="activar_modo_noche"
+    )
+    application.job_queue.run_daily(
+        desactivar_modo_noche,
+        time=datetime.time(hour=8, minute=0, tzinfo=TZ),
+        name="desactivar_modo_noche"
+    )
+
+    # Bienvenida/despedida
+    application.add_handler(ChatMemberHandler(bienvenida, ChatMemberHandler.CHAT_MEMBER))
+    application.add_handler(ChatMemberHandler(despedida, ChatMemberHandler.CHAT_MEMBER))
+
+    # Filtro modo noche (solo no admins)
+    application.add_handler(MessageHandler(filters.ALL & filters.Chat(GENERAL_CHAT_ID), restringir_mensajes))
+
+    # RESPUESTA automática fuera de modo noche en grupo, excluyendo /ayuda
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & filters.Chat(GENERAL_CHAT_ID) & ~filters.COMMAND & ~filters.Regex(r"^/ayuda"),
+            respuesta_general
+        )
+    )
+
+    # RESPUESTA automática por privado (excluye comandos)
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND,
+            respuesta_privada
+        )
+    )
+
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
