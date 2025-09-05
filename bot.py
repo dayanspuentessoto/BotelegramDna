@@ -4,7 +4,7 @@ from bs4 import BeautifulSoup
 import datetime
 import pytz
 import os
-from telegram import Update, ChatPermissions, InputFile
+from telegram import Update, ChatPermissions
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters, ChatMemberHandler
 
 # --- CONFIGURACIÓN ---
@@ -28,8 +28,7 @@ async def scrape_cartelera():
 
         try:
             await page.goto(CARTELERA_URL, timeout=120000)
-            # Espera 10 segundos para asegurar que el contenido cargado por JS aparezca
-            await page.wait_for_timeout(10000)
+            await page.wait_for_selector("table", timeout=20000)
         except PlaywrightTimeoutError:
             logging.error("Timeout: No se pudo cargar la página en el tiempo esperado.")
             await browser.close()
@@ -84,16 +83,15 @@ async def scrape_cartelera():
         logging.info(f"Eventos obtenidos: {campeonatos}")
         return campeonatos
 
-# --- Comando para enviar el HTML como texto ---
+# --- Comando para enviar el HTML de la cartelera (solo la primera tabla) ---
 async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
             await page.goto(CARTELERA_URL, timeout=120000)
-            # Espera 10 segundos para asegurar que el contenido cargado por JS aparezca
             await page.wait_for_selector("table", timeout=20000)
-            html = await page.content()
+            html = await page.inner_html("table")
             await browser.close()
             await update.message.reply_text(html[:4000])
             # Si quieres ver más, puedes dividir el HTML y enviarlo en partes:
@@ -101,6 +99,23 @@ async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
             #     await update.message.reply_text(html[i:i+4000])
     except Exception as e:
         await update.message.reply_text(f"Error al obtener HTML: {e}")
+
+# --- Comando para enviar el texto plano del body ---
+async def enviar_texto_body(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.goto(CARTELERA_URL, timeout=120000)
+            await page.wait_for_selector("body", timeout=20000)
+            texto = await page.inner_text("body")
+            await browser.close()
+            await update.message.reply_text(texto[:4000])
+            # Si quieres ver más, puedes dividir el texto y enviarlo en partes:
+            # for i in range(4000, len(texto), 4000):
+            #     await update.message.reply_text(texto[i:i+4000])
+    except Exception as e:
+        await update.message.reply_text(f"Error al obtener texto: {e}")
 
 # --- Envío de eventos del día siguiente al canal EVENTOS DEPORTIVOS ---
 async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
@@ -255,6 +270,7 @@ def main():
     # Comandos
     application.add_handler(CommandHandler("cartelera", cartelera))
     application.add_handler(CommandHandler("htmlcartelera", enviar_html))
+    application.add_handler(CommandHandler("textocartelera", enviar_texto_body))
     application.add_handler(CommandHandler("noche", modo_noche_manual))
     application.add_handler(CommandHandler("ayuda", ayuda))
 
