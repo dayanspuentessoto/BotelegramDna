@@ -1,58 +1,66 @@
 import os
 import logging
+from datetime import datetime, timedelta
 import requests
-from bs4 import BeautifulSoup
 from telegram import Update
-from telegram.ext import (
-    Application, ContextTypes, CommandHandler
-)
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CARTELERA_URL = "https://www.livesports-tv.com/es/sports/chile"
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
+API_FOOTBALL_KEY = "0e6b079461156a444f01f84256feb6cb"  # Tu clave aquí
 
-def scrape_livesportstv():
-    url = CARTELERA_URL
+def get_chile_fixtures():
+    url = "https://v3.football.api-sports.io/fixtures"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/115.0.0.0 Safari/537.36",
+        "x-apisports-key": API_FOOTBALL_KEY,
+        "Accept": "application/json"
     }
-    try:
-        resp = requests.get(url, headers=headers, timeout=20)
-        soup = BeautifulSoup(resp.text, "html.parser")
-        eventos = []
-        for row in soup.select("div.match-row"):
-            hora = row.select_one("div.match-time")
-            nombre = row.select_one("div.match-event")
-            canal = row.select_one("div.match-channel")
-            deporte = row.select_one("div.match-sport")
+    # Liga chilena principal: 226 (Primera División), puedes agregar más ligas si lo deseas
+    liga_chile = "226"
+    hoy = datetime.utcnow()
+    manana = hoy + timedelta(days=1)
+    fechas = [
+        hoy.strftime("%Y-%m-%d"),
+        manana.strftime("%Y-%m-%d")
+    ]
+    eventos = []
+    for fecha in fechas:
+        params = {
+            "league": liga_chile,
+            "season": "2024",  # Cambia por el año actual si corresponde
+            "date": fecha
+        }
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=15)
+            data = resp.json()
+            for match in data.get("response", []):
+                fixture = match["fixture"]
+                teams = match["teams"]
+                eventos.append({
+                    "fecha": fixture["date"][:10],
+                    "hora": fixture["date"][11:16],
+                    "local": teams["home"]["name"],
+                    "visitante": teams["away"]["name"],
+                    "estado": fixture["status"]["long"]
+                })
+        except Exception as e:
             eventos.append({
-                "hora": hora.get_text(strip=True) if hora else "",
-                "nombre": nombre.get_text(strip=True) if nombre else "",
-                "canal": canal.get_text(strip=True) if canal else "",
-                "deporte": deporte.get_text(strip=True) if deporte else ""
+                "fecha": fecha, "hora": "", "local": "", "visitante": f"Error: {e}", "estado": ""
             })
-        return eventos
-    except Exception as e:
-        return [{"hora": "", "nombre": f"Error: {e}", "canal": "", "deporte": ""}]
+    return eventos
 
 async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    eventos = scrape_livesportstv()
-    if not eventos or (len(eventos) == 1 and eventos[0]["nombre"].startswith("Error")):
-        await update.message.reply_text("No se pudo obtener la cartelera deportiva o ocurrió un error.")
+    eventos = get_chile_fixtures()
+    if not eventos or (len(eventos) == 1 and "Error" in eventos[0]["visitante"]):
+        await update.message.reply_text("No se pudo obtener la cartelera de fútbol o ocurrió un error.")
         if eventos:
-            await update.message.reply_text(eventos[0]["nombre"])
+            await update.message.reply_text(eventos[0]["visitante"])
         return
-    await update.message.reply_text(f"Eventos deportivos hoy en Chile: {len(eventos)} encontrados.")
-    for evento in eventos[:12]:
+    await update.message.reply_text(f"Partidos de fútbol transmitidos en Chile hoy y mañana: {len(eventos)} encontrados.")
+    for evento in eventos:
         texto = (
-            f"🕒 {evento['hora']}\n"
-            f"🏟️ {evento['nombre']}\n"
-            f"📺 Canal: {evento['canal']}\n"
-            f"⚽ Deporte: {evento['deporte']}"
+            f"📅 {evento['fecha']} {evento['hora']}\n"
+            f"⚽ {evento['local']} vs {evento['visitante']}\n"
+            f"🔔 Estado: {evento['estado']}"
         )
         await update.message.reply_text(texto)
 
