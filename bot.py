@@ -12,8 +12,8 @@ from telegram.ext import (
 # --- CONFIGURACIÓN ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 ADMIN_IDS = [5032964793]
-GENERAL_CHAT_ID = "-2421748184"  # ID real de tu grupo D.N.A. TV
-GROUP_ID = "-2421748184"         # ID real de tu grupo D.N.A. TV
+GENERAL_CHAT_ID = "-2421748184"
+GROUP_ID = "-2421748184"
 
 CARTELERA_URL = "https://www.emol.com/movil/deportes/carteleradirecttv/index.aspx"
 TZ = ZoneInfo("America/Santiago")
@@ -140,7 +140,6 @@ async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Filtro de mensajes modo noche ---
 async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     hora = datetime.datetime.now(TZ).hour
-    # Solo restringe en modo noche
     if 23 <= hora or hora < 8:
         user_id = update.effective_user.id
         if user_id in ADMIN_IDS:
@@ -150,7 +149,6 @@ async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE
 # --- RESPUESTA automática fuera de modo noche (grupo) ---
 async def respuesta_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
     hora = datetime.datetime.now(TZ).hour
-    # Solo responde fuera del modo noche
     if 8 <= hora < 23:
         saludo = obtener_saludo()
         await update.message.reply_text(
@@ -185,7 +183,6 @@ def main():
     application.add_handler(CommandHandler("noche", modo_noche_manual))
     application.add_handler(CommandHandler("ayuda", ayuda))
 
-    # Modo noche automático
     application.job_queue.run_daily(
         lambda context: activar_modo_noche(context, GENERAL_CHAT_ID),
         time=datetime.time(hour=23, minute=0, tzinfo=TZ),
@@ -197,14 +194,11 @@ def main():
         name="desactivar_modo_noche"
     )
 
-    # Bienvenida/despedida
     application.add_handler(ChatMemberHandler(bienvenida, ChatMemberHandler.CHAT_MEMBER))
     application.add_handler(ChatMemberHandler(despedida, ChatMemberHandler.CHAT_MEMBER))
 
-    # Filtro modo noche (solo no admins)
     application.add_handler(MessageHandler(filters.ALL & filters.Chat(GENERAL_CHAT_ID), restringir_mensajes))
 
-    # RESPUESTA automática fuera de modo noche en grupo, excluyendo /ayuda
     application.add_handler(
         MessageHandler(
             filters.TEXT & filters.Chat(GENERAL_CHAT_ID) & ~filters.COMMAND & ~filters.Regex(r"^/ayuda"),
@@ -212,7 +206,6 @@ def main():
         )
     )
 
-    # RESPUESTA automática por privado (excluye comandos)
     application.add_handler(
         MessageHandler(
             filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND,
@@ -220,7 +213,12 @@ def main():
         )
     )
 
-    application.run_polling()
+    # --- WEBHOOK ---
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 8443)),
+        webhook_url=os.environ.get("WEBHOOK_URL")
+    )
 
 if __name__ == "__main__":
     main()
