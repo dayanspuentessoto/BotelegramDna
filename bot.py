@@ -1,5 +1,5 @@
 import logging
-from playwright.async_api import async_playwright  # Importamos la versión asíncrona de Playwright
+from playwright.async_api import async_playwright  # Usamos la versión asíncrona de Playwright
 from bs4 import BeautifulSoup
 import datetime
 import os
