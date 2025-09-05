@@ -1,5 +1,5 @@
 import logging
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 import datetime
 import pytz
@@ -10,8 +10,8 @@ from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandl
 # --- CONFIGURACIÓN ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GENERAL_CHAT_ID = -2421748184
-# ID del canal EVENTOS DEPORTIVOS (-100 + número del link /c/2421748184/xxxx)
-CANAL_EVENTOS_ID = -1002421748184
+EVENTOS_DEPORTIVOS_CHAT_ID = -1002421748184
+EVENTOS_DEPORTIVOS_THREAD_ID = 1396  # ID del tema EVENTOS DEPORTIVOS
 CARTELERA_URL = "https://www.futbolenvivochile.com/"
 TZ = pytz.timezone("America/Santiago")
 
@@ -126,22 +126,26 @@ def formato_mensaje_partidos(agrupados, fecha):
             )
     return mensaje
 
-async def send_long_message(bot, chat_id, text, parse_mode=None):
+async def send_long_message(bot, chat_id, text, parse_mode=None, thread_id=None):
     for i in range(0, len(text), 4000):
-        await bot.send_message(chat_id=chat_id, text=text[i:i+4000], parse_mode=parse_mode)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=text[i:i+4000],
+            parse_mode=parse_mode,
+            message_thread_id=thread_id
+        )
 
-# --- COMANDO /cartelera: Envío en privado, eventos deportivos, aviso en otros chats ---
+# --- COMANDO /cartelera: SIEMPRE envía en el tema EVENTOS DEPORTIVOS salvo privado ---
 async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # Si el mensaje es privado, responde allí
+        # Determinar el tipo de chat y destino
         if update.effective_chat.type == "private":
             destino = update.effective_chat.id
-        # Si es en el canal de eventos deportivos, responde ahí
-        elif update.effective_chat.id == CANAL_EVENTOS_ID:
-            destino = CANAL_EVENTOS_ID
-        # Si es en otro grupo/canal, responde en EVENTOS DEPORTIVOS y avisa
+            thread_id = None
         else:
-            destino = CANAL_EVENTOS_ID
+            # SIEMPRE envía al tema EVENTOS DEPORTIVOS
+            destino = EVENTOS_DEPORTIVOS_CHAT_ID
+            thread_id = EVENTOS_DEPORTIVOS_THREAD_ID
 
         hoy, manana = dias_a_mostrar()
         partidos = await scrape_cartelera_table()
@@ -151,26 +155,32 @@ async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if partidos_hoy:
             agrupados_hoy = agrupa_partidos_por_campeonato(partidos_hoy)
             mensaje_hoy = formato_mensaje_partidos(agrupados_hoy, hoy)
-            await send_long_message(context.bot, destino, mensaje_hoy, parse_mode="Markdown")
+            await send_long_message(context.bot, destino, mensaje_hoy, parse_mode="Markdown", thread_id=thread_id)
         else:
-            await context.bot.send_message(chat_id=destino, text="No hay partidos para hoy.")
+            await context.bot.send_message(chat_id=destino, text="No hay partidos para hoy.", message_thread_id=thread_id)
 
         if partidos_manana:
             agrupados_manana = agrupa_partidos_por_campeonato(partidos_manana)
             mensaje_manana = formato_mensaje_partidos(agrupados_manana, manana)
-            await send_long_message(context.bot, destino, mensaje_manana, parse_mode="Markdown")
+            await send_long_message(context.bot, destino, mensaje_manana, parse_mode="Markdown", thread_id=thread_id)
         else:
-            await context.bot.send_message(chat_id=destino, text="No hay partidos para mañana.")
+            await context.bot.send_message(chat_id=destino, text="No hay partidos para mañana.", message_thread_id=thread_id)
 
-        # Si el comando no fue por privado ni por el canal de eventos deportivos, avisa en el grupo
-        if update.effective_chat.type != "private" and update.effective_chat.id != CANAL_EVENTOS_ID:
-            await update.message.reply_text("La cartelera fue enviada al canal EVENTOS DEPORTIVOS.")
+        # Si el comando no fue por privado, avisa en el tema actual (solo si no está ya en EVENTOS DEPORTIVOS)
+        if update.effective_chat.type != "private":
+            # Si el comando fue enviado desde otro tema del grupo, avisa al usuario
+            # Para saber el thread actual, usa update.message.message_thread_id
+            thread_actual = None
+            if update.message:
+                thread_actual = update.message.message_thread_id
+            if thread_actual != EVENTOS_DEPORTIVOS_THREAD_ID:
+                await update.message.reply_text("La cartelera fue enviada al tema EVENTOS DEPORTIVOS.")
 
     except Exception as e:
-        await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text=f"Error: {str(e)}")
+        await context.bot.send_message(chat_id=EVENTOS_DEPORTIVOS_CHAT_ID, text=f"Error: {str(e)}", message_thread_id=EVENTOS_DEPORTIVOS_THREAD_ID)
         logging.error(f"Error en /cartelera: {e}")
 
-# --- ENVÍO AUTOMÁTICO DIARIO AL CANAL DE EVENTOS DEPORTIVOS ---
+# --- ENVÍO AUTOMÁTICO DIARIO AL TEMA EVENTOS DEPORTIVOS ---
 async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
     try:
         hoy, manana = dias_a_mostrar()
@@ -178,25 +188,28 @@ async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
         partidos_hoy = filtra_partidos_por_fecha(partidos, hoy)
         partidos_manana = filtra_partidos_por_fecha(partidos, manana)
 
+        thread_id = EVENTOS_DEPORTIVOS_THREAD_ID
+        chat_id = EVENTOS_DEPORTIVOS_CHAT_ID
+
         if partidos_hoy:
             agrupados_hoy = agrupa_partidos_por_campeonato(partidos_hoy)
             mensaje_hoy = formato_mensaje_partidos(agrupados_hoy, hoy)
-            await send_long_message(context.bot, CANAL_EVENTOS_ID, mensaje_hoy, parse_mode="Markdown")
+            await send_long_message(context.bot, chat_id, mensaje_hoy, parse_mode="Markdown", thread_id=thread_id)
         else:
-            await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text="No hay partidos para hoy.")
+            await context.bot.send_message(chat_id=chat_id, text="No hay partidos para hoy.", message_thread_id=thread_id)
 
         if partidos_manana:
             agrupados_manana = agrupa_partidos_por_campeonato(partidos_manana)
             mensaje_manana = formato_mensaje_partidos(agrupados_manana, manana)
-            await send_long_message(context.bot, CANAL_EVENTOS_ID, mensaje_manana, parse_mode="Markdown")
+            await send_long_message(context.bot, chat_id, mensaje_manana, parse_mode="Markdown", thread_id=thread_id)
         else:
-            await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text="No hay partidos para mañana.")
+            await context.bot.send_message(chat_id=chat_id, text="No hay partidos para mañana.", message_thread_id=thread_id)
 
     except Exception as e:
-        await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text=f"Error al obtener cartelera: {str(e)}")
+        await context.bot.send_message(chat_id=EVENTOS_DEPORTIVOS_CHAT_ID, text=f"Error al obtener cartelera: {str(e)}", message_thread_id=EVENTOS_DEPORTIVOS_THREAD_ID)
         logging.error(f"Error en envío diario: {e}")
 
-# --- COMANDO /htmlcartelera: Envía HTML de la cartelera completa ---
+# --- COMANDO /htmlcartelera ---
 async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         async with async_playwright() as p:
@@ -212,7 +225,7 @@ async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Error al obtener HTML: {e}")
 
-# --- COMANDO /textocartelera: Envía el texto plano del body ---
+# --- COMANDO /textocartelera ---
 async def enviar_texto_body(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         async with async_playwright() as p:
@@ -228,7 +241,7 @@ async def enviar_texto_body(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Error al obtener texto: {e}")
 
-# --- COMANDO /hora: Muestra la hora local en Chile ---
+# --- COMANDO /hora ---
 async def hora_chile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ahora = datetime.datetime.now(TZ)
     await update.message.reply_text(
