@@ -9,9 +9,9 @@ from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandl
 
 # --- CONFIGURACIÓN ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GENERAL_CHAT_ID = -1002421748184  # Chat ID del grupo D.N.A. TV
-GENERAL_THREAD_ID = 1             # ID del tema General
-EVENTOS_DEPORTIVOS_THREAD_ID = 1396  # ID del tema EVENTOS DEPORTIVOS
+GENERAL_CHAT_ID = -1002421748184  # ID del grupo D.N.A. TV (supergrupo)
+GENERAL_THREAD_ID = 1             # ID del tema "General" (de https://t.me/c/2421748184/1)
+EVENTOS_DEPORTIVOS_THREAD_ID = 1396  # ID del tema "EVENTOS DEPORTIVOS"
 CARTELERA_URL = "https://www.futbolenvivochile.com/"
 TZ = pytz.timezone("America/Santiago")
 
@@ -299,9 +299,24 @@ def obtener_saludo():
 
 # --- MENSAJE BIENVENIDA ---
 async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_member = update.chat_member
-    if chat_member.new_chat_members:
+    # Handler para eventos de nuevos miembros en el grupo, solo para el tema General
+    chat_member = getattr(update, "chat_member", None)
+    # Para ChatMemberHandler event
+    if chat_member and getattr(chat_member, "new_chat_members", None):
         for member in chat_member.new_chat_members:
+            nombre = member.first_name if member.first_name else ""
+            apellidos = member.last_name if member.last_name else ""
+            nombre_completo = f"{nombre} {apellidos}".strip()
+            if not nombre_completo:
+                nombre_completo = member.username if member.username else "Usuario"
+            await context.bot.send_message(
+                GENERAL_CHAT_ID,
+                text=f"{nombre_completo} BIENVENIDO(A) A NUESTRO SELECTO GRUPO D.N.A. TV, MANTENTE SIEMPRE AL DIA Y ACTUALIZADO, SI TIENES ALGUNA DUDA ESCRIBE EL COMANDO AYUDA PARA MAS INFO 😎🤖",
+                message_thread_id=GENERAL_THREAD_ID,
+            )
+    # Para MessageHandler StatusUpdate.NEW_CHAT_MEMBERS (alternativo)
+    elif hasattr(update, "message") and getattr(update.message, "new_chat_members", None):
+        for member in update.message.new_chat_members:
             nombre = member.first_name if member.first_name else ""
             apellidos = member.last_name if member.last_name else ""
             nombre_completo = f"{nombre} {apellidos}".strip()
@@ -315,8 +330,8 @@ async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- MENSAJE DESPEDIDA ---
 async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_member = update.chat_member
-    if chat_member.old_chat_member.status not in ['left', 'kicked']:
+    chat_member = getattr(update, "chat_member", None)
+    if not chat_member or chat_member.old_chat_member.status not in ['left', 'kicked']:
         return
     user = chat_member.old_chat_member.user
     nombre = user.first_name if user.first_name else ""
@@ -332,11 +347,11 @@ async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- FILTRO DE MENSAJES MODO NOCHE ---
 async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    hora = datetime.datetime.now(TZ).hour
     # Solo aplica en tema General
     if hasattr(update.message, "message_thread_id"):
         if update.message.message_thread_id != GENERAL_THREAD_ID:
             return
+    hora = datetime.datetime.now(TZ).hour
     if 23 <= hora or hora < 8:
         user_id = update.effective_user.id
         chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
@@ -408,17 +423,22 @@ def main():
         name="cartelera_diaria"
     )
 
+    # Bienvenida y despedida: soporta ambos tipos de evento
     application.add_handler(ChatMemberHandler(bienvenida, ChatMemberHandler.CHAT_MEMBER))
     application.add_handler(ChatMemberHandler(despedida, ChatMemberHandler.CHAT_MEMBER))
+    application.add_handler(MessageHandler(
+        filters.StatusUpdate.NEW_CHAT_MEMBERS & filters.Chat(GENERAL_CHAT_ID),
+        bienvenida
+    ))
 
-    # --- RESPUESTA GENERAL: cualquier mensaje en tema General excepto admins
+    # RESPUESTA GENERAL: cualquier mensaje en tema General excepto admins
     application.add_handler(
         MessageHandler(
             filters.ALL & filters.Chat(GENERAL_CHAT_ID) & ~filters.COMMAND,
             respuesta_general
         )
     )
-    # --- FILTRO MODO NOCHE en tema General
+    # FILTRO MODO NOCHE en tema General
     application.add_handler(
         MessageHandler(
             filters.ALL & filters.Chat(GENERAL_CHAT_ID),
