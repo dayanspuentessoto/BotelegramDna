@@ -47,16 +47,15 @@ async def scrape_cartelera():
 
         soup = BeautifulSoup(html, "html.parser")
         
-        # --- Lógica para captar solo eventos debajo de la fecha de mañana y agrupar por campeonato ---
+        # --- Lógica robusta para captar solo eventos debajo de la fecha de mañana y agrupar por campeonato ---
         tomorrow = datetime.datetime.now(TZ).date() + datetime.timedelta(days=1)
         tomorrow_str = tomorrow.strftime("%d-%m-%Y")
-        
-        # Busca el encabezado con la fecha "Mañana" y la fecha
+
+        # Busca el encabezado con la fecha de forma robusta (ignorando espacios, mayúsculas/minúsculas)
         fecha_header = None
-        for tag in soup.find_all(["div", "td", "span"]):
-            txt = tag.get_text(strip=True)
-            if txt.startswith("Mañana") and tomorrow_str in txt:
-                fecha_header = tag
+        for tag in soup.find_all(text=True):
+            if "mañana" in tag.lower() and tomorrow_str in tag:
+                fecha_header = tag.parent
                 break
 
         if not fecha_header:
@@ -69,12 +68,16 @@ async def scrape_cartelera():
 
         while current:
             txt = current.get_text(strip=True)
-            # Si encontramos otro encabezado de fecha, detenemos
-            if (txt.startswith("Hoy") or txt.startswith("Mañana") or txt.startswith("domingo") or txt.startswith("lunes") or txt.startswith("martes") or txt.startswith("miércoles") or txt.startswith("jueves") or txt.startswith("viernes")) and tomorrow_str not in txt:
+            # Si encontramos otro encabezado de fecha, detenemos (robusto para otras fechas)
+            if any(day in txt.lower() for day in [
+                "hoy", "mañana", "domingo", "lunes", "martes", "miércoles", "jueves", "viernes"
+            ]) and tomorrow_str not in txt:
                 break
 
             # Detecta bloque de campeonato (usando su estilo, clase, o si es un div con fondo)
-            if current.name == "div" and ("background" in current.get("style", "") or current.get("class")):
+            if current.name == "div" and (
+                "background" in current.get("style", "") or current.get("class")
+            ):
                 campeonato_actual = txt
                 campeonatos[campeonato_actual] = []
             # Detecta filas de eventos
