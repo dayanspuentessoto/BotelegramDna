@@ -34,6 +34,11 @@ async def scrape_cartelera():
 
             # Obtener el contenido de la página después de cargar JavaScript
             html = await page.content()
+
+            # Imprimir el HTML cargado para depurar
+            logging.info("HTML de la página cargada:")
+            logging.info(html[:2000])  # Solo imprimimos los primeros 2000 caracteres para evitar sobrecargar los logs
+
             soup = BeautifulSoup(html, "html.parser")
 
             eventos = []
