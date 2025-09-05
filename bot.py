@@ -7,16 +7,13 @@ from telegram.ext import (
     Application, ContextTypes, CommandHandler
 )
 
-# --- CONFIGURACIÓN ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-
-# Fuente alternativa: TV Sports Guide Chile
-CARTELERA_URL = "https://www.tvsportsguide.com/chile/"
+CARTELERA_URL = "https://www.livesports-tv.com/es/sports/chile"
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
-def scrape_tvsportsguide():
+def scrape_livesportstv():
     url = CARTELERA_URL
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -24,16 +21,14 @@ def scrape_tvsportsguide():
                       "Chrome/115.0.0.0 Safari/537.36",
     }
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
+        resp = requests.get(url, headers=headers, timeout=20)
         soup = BeautifulSoup(resp.text, "html.parser")
         eventos = []
-        # Cada evento está en <li class="event">
-        for li in soup.find_all("li", class_="event"):
-            hora = li.find("span", class_="time")
-            nombre = li.find("span", class_="name")
-            canal = li.find("span", class_="channel")
-            deporte = li.find("span", class_="sport")
-            # Extrae la info, si falta algo lo deja vacío
+        for row in soup.select("div.match-row"):
+            hora = row.select_one("div.match-time")
+            nombre = row.select_one("div.match-event")
+            canal = row.select_one("div.match-channel")
+            deporte = row.select_one("div.match-sport")
             eventos.append({
                 "hora": hora.get_text(strip=True) if hora else "",
                 "nombre": nombre.get_text(strip=True) if nombre else "",
@@ -45,14 +40,13 @@ def scrape_tvsportsguide():
         return [{"hora": "", "nombre": f"Error: {e}", "canal": "", "deporte": ""}]
 
 async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    eventos = scrape_tvsportsguide()
+    eventos = scrape_livesportstv()
     if not eventos or (len(eventos) == 1 and eventos[0]["nombre"].startswith("Error")):
         await update.message.reply_text("No se pudo obtener la cartelera deportiva o ocurrió un error.")
         if eventos:
             await update.message.reply_text(eventos[0]["nombre"])
         return
     await update.message.reply_text(f"Eventos deportivos hoy en Chile: {len(eventos)} encontrados.")
-    # Muestra hasta 12 eventos (puedes cambiar el número)
     for evento in eventos[:12]:
         texto = (
             f"🕒 {evento['hora']}\n"
