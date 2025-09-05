@@ -1,12 +1,13 @@
 import os
 import re
 from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
 from telegram import Update, ChatPermissions
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 PORT = int(os.environ.get('PORT', '8080'))
-WEBHOOK_PATH = f"/webhook/{TOKEN[:10]}"  # Usado solo para generar la URL
+WEBHOOK_PATH = f"/webhook/{TOKEN[:10]}"
 
 GRUPO_NOMBRE = "D.N.A. TV"
 CANAL_GENERAL = "General"
@@ -44,12 +45,12 @@ async def modo_noche(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print("Handler: modo_noche")
     if not es_general(update):
         return
-    now = datetime.now()
+    now = datetime.now(ZoneInfo("America/Santiago"))
     if now.hour >= HORA_INICIO_NOCHE or now.hour < HORA_FIN_NOCHE:
         if not modo_noche_avisado:
             await update.message.reply_text("🌙 El canal General ha entrado en MODO NOCHE: no se podrán enviar mensajes hasta las 08:00")
             modo_noche_avisado = True
-        until_time = datetime.combine(now.date(), time(HORA_FIN_NOCHE))
+        until_time = datetime.combine(now.date(), time(HORA_FIN_NOCHE), tzinfo=ZoneInfo("America/Santiago"))
         if now.hour >= HORA_INICIO_NOCHE:
             until_time += timedelta(days=1)
         try:
@@ -69,7 +70,7 @@ async def aviso_fin_modo_noche(context: ContextTypes.DEFAULT_TYPE):
     global modo_dia_avisado
     print("Job: aviso_fin_modo_noche")
     app = context.application
-    now = datetime.now()
+    now = datetime.now(ZoneInfo("America/Santiago"))
     if now.hour == HORA_FIN_NOCHE and not modo_dia_avisado:
         for update in await app.bot.get_updates():
             if hasattr(update, 'message'):
@@ -85,8 +86,14 @@ async def saludo_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print("Handler: saludo_general")
     if not es_general(update):
         return
-    now = datetime.now()
-    saludo = "¡Buenos días!" if now.hour < 12 else "¡Buenas tardes!"
+    now = datetime.now(ZoneInfo("America/Santiago"))
+    hora = now.hour
+    if 6 <= hora < 12:
+        saludo = "¡Buenos días!"
+    elif 12 <= hora < 20:
+        saludo = "¡Buenas tardes!"
+    else:
+        saludo = "¡Buenas noches!"
     await update.message.reply_text(
         f"{saludo} Soy el bot del canal General de D.N.A. TV. Si necesitas recomendación, escribe 'ayuda'."
     )
@@ -101,8 +108,14 @@ async def ayuda_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def saludo_privado(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print("Handler: saludo_privado (mensaje privado recibido)", update.message)
-    now = datetime.now()
-    saludo = "¡Buenos días!" if now.hour < 12 else "¡Buenas tardes!"
+    now = datetime.now(ZoneInfo("America/Santiago"))
+    hora = now.hour
+    if 6 <= hora < 12:
+        saludo = "¡Buenos días!"
+    elif 12 <= hora < 20:
+        saludo = "¡Buenas tardes!"
+    else:
+        saludo = "¡Buenas noches!"
     await update.message.reply_text(
         f"{saludo} Soy un bot, no tengo todas las respuestas. Si necesitas ayuda, por favor contáctate con el administrador."
     )
@@ -120,14 +133,13 @@ def main():
     app.job_queue.run_repeating(aviso_fin_modo_noche, interval=60, first=0)
 
     url_base = os.environ.get('WEBHOOK_BASE', '')
-    webhook_url = f"{url_base}/"  # Asegura que sea el endpoint raíz
+    webhook_url = f"{url_base}/"
     print(f"Usando webhook URL: {webhook_url}")
 
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         webhook_url=webhook_url
-        # webhook_path eliminado
     )
 
 if __name__ == "__main__":
