@@ -28,23 +28,17 @@ def fecha_en_partido(fecha_str):
     fecha_str = (fecha_str or "").lower()
     hoy = datetime.datetime.now(TZ).date()
     manana = hoy + datetime.timedelta(days=1)
-    # Busca fecha en formato dd-mm-yyyy
     match = re.search(r"(\d{2}-\d{2}-\d{4})", fecha_str)
     if match:
         d, m, y = map(int, match.group(1).split('-'))
         fecha = datetime.date(y, m, d)
-        # Si dice 'hoy' y la fecha coincide con hoy
         if "hoy" in fecha_str and fecha == hoy:
             return hoy
-        # Si dice 'mañana' y la fecha coincide con mañana
         if ("mañana" in fecha_str or "manana" in fecha_str) and fecha == manana:
             return manana
-        # Si no dice 'hoy' ni 'mañana', igual retorna la fecha encontrada
         return fecha
-    # Si solo dice 'hoy' pero no tiene fecha
     if "hoy" in fecha_str:
         return hoy
-    # Si solo dice 'mañana' pero no tiene fecha
     if "mañana" in fecha_str or "manana" in fecha_str:
         return manana
     return None
@@ -66,11 +60,9 @@ def parse_cartelera(html):
     fecha = None
     campeonato = None
     for tr in soup.find_all("tr"):
-        # Detecta cabecera de día (hoy, mañana, etc)
         if "cabeceraTabla" in tr.get("class", []):
             fecha = tr.get_text(strip=True)
             continue
-        # Detecta cabecera de campeonato
         if "cabeceraCompericion" in tr.get("class", []):
             campeonato = tr.get_text(strip=True)
             continue
@@ -104,8 +96,12 @@ async def scrape_cartelera_table():
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         await page.goto(CARTELERA_URL, timeout=120000)
-        await page.wait_for_selector("table", timeout=20000)
-        html = await page.inner_html("table")
+        # Scroll para cargar todo el contenido (mejora para lazy loading)
+        for _ in range(10):
+            await page.evaluate("window.scrollBy(0, window.innerHeight);")
+            await page.wait_for_timeout(800)
+        # Captura todo el HTML del body (no solo una tabla)
+        html = await page.inner_html("body")
         await browser.close()
         return parse_cartelera(html)
 
@@ -121,7 +117,6 @@ def filtra_partidos_por_dia(partidos):
 def formato_mensaje_partidos(agrupados):
     mensaje = "⚽ *Cartelera de Partidos Televisados*\n"
     fechas_validas = dias_a_mostrar()
-    # Usamos fecha_en_partido para obtener el objeto de fecha real para ordenar
     fechas_ordenadas = sorted(
         {f for (f, c) in agrupados.keys() if fecha_en_partido(f) in fechas_validas},
         key=lambda x: fecha_en_partido(x)
@@ -169,15 +164,17 @@ async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text=f"Error al obtener cartelera: {str(e)}")
         logging.error(f"Error en envío diario: {e}")
 
-# --- COMANDO /htmlcartelera: Envía HTML de la tabla principal ---
+# --- COMANDO /htmlcartelera: Envía HTML de la cartelera completa ---
 async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
             await page.goto(CARTELERA_URL, timeout=120000)
-            await page.wait_for_selector("table", timeout=20000)
-            html = await page.inner_html("table")
+            for _ in range(10):
+                await page.evaluate("window.scrollBy(0, window.innerHeight);")
+                await page.wait_for_timeout(800)
+            html = await page.inner_html("body")
             await browser.close()
             await update.message.reply_text(html[:4000])
     except Exception as e:
@@ -190,7 +187,9 @@ async def enviar_texto_body(update: Update, context: ContextTypes.DEFAULT_TYPE):
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
             await page.goto(CARTELERA_URL, timeout=120000)
-            await page.wait_for_selector("body", timeout=20000)
+            for _ in range(10):
+                await page.evaluate("window.scrollBy(0, window.innerHeight);")
+                await page.wait_for_timeout(800)
             texto = await page.inner_text("body")
             await browser.close()
             await update.message.reply_text(texto[:4000])
@@ -341,7 +340,6 @@ def main():
     application.add_handler(CommandHandler("noche", modo_noche_manual))
     application.add_handler(CommandHandler("ayuda", ayuda))
 
-    # Jobs automáticos (modo noche)
     application.job_queue.run_daily(
         lambda context: activar_modo_noche(context, GENERAL_CHAT_ID),
         time=datetime.time(hour=23, minute=0, tzinfo=TZ),
@@ -353,7 +351,6 @@ def main():
         name="desactivar_modo_noche"
     )
 
-    # Job para enviar cartelera todos los días a las 10:00 AM al canal de eventos deportivos
     application.job_queue.run_daily(
         enviar_eventos_diarios,
         time=datetime.time(hour=10, minute=0, tzinfo=TZ),
