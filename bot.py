@@ -28,7 +28,8 @@ async def scrape_cartelera():
 
         try:
             await page.goto(CARTELERA_URL, timeout=120000)
-            await page.wait_for_timeout(5000)
+            # Espera 10 segundos para asegurar que el contenido cargado por JS aparezca
+            await page.wait_for_timeout(10000)
         except PlaywrightTimeoutError:
             logging.error("Timeout: No se pudo cargar la página en el tiempo esperado.")
             await browser.close()
@@ -90,10 +91,12 @@ async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
             await page.goto(CARTELERA_URL, timeout=120000)
-            await page.wait_for_timeout(5000)
+            # Espera 10 segundos para asegurar que el contenido cargado por JS aparezca
+            await page.wait_for_timeout(10000)
             html = await page.content()
             await browser.close()
             await update.message.reply_text(html[:4000])
+            # Si quieres ver más, puedes dividir el HTML y enviarlo en partes:
             # for i in range(4000, len(html), 4000):
             #     await update.message.reply_text(html[i:i+4000])
     except Exception as e:
