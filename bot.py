@@ -19,6 +19,19 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
+def dias_a_mostrar():
+    hoy = datetime.datetime.now(TZ).date()
+    manana = hoy + datetime.timedelta(days=1)
+    return [hoy, manana]
+
+def fecha_en_partido(fecha_str):
+    import re
+    match = re.search(r"(\d{2}-\d{2}-\d{4})", fecha_str or "")
+    if match:
+        d,m,y = map(int, match.group(1).split('-'))
+        return datetime.date(y,m,d)
+    return None
+
 def agrupa_partidos_por_campeonato(partidos):
     agrupados = {}
     for partido in partidos:
@@ -35,9 +48,9 @@ def parse_cartelera(html):
     partidos = []
     fecha = None
     campeonato = None
-
+    # Permite detectar cambios de sección para varios días
     for tr in soup.find_all("tr"):
-        # Cabecera de día
+        # Cabecera de día (puede haber varias)
         if "cabeceraTabla" in tr.get("class", []):
             fecha = tr.get_text(strip=True)
             continue
@@ -79,30 +92,19 @@ async def scrape_cartelera_table():
         await browser.close()
         return parse_cartelera(html)
 
-def dias_a_mostrar():
-    hoy = datetime.datetime.now(TZ).date()
-    manana = hoy + datetime.timedelta(days=1)
-    return [hoy, manana]
-
-def fecha_en_partido(fecha_str):
-    import re
-    match = re.search(r"(\d{2}-\d{2}-\d{4})", fecha_str or "")
-    if match:
-        d,m,y = map(int, match.group(1).split('-'))
-        return datetime.date(y,m,d)
-    return None
-
-def filtra_partidos_por_dia(partidos, fechas_obj):
+def filtra_partidos_por_dia(partidos):
+    fechas_validas = dias_a_mostrar()
     partidos_filtrados = []
     for partido in partidos:
         fecha_obj = fecha_en_partido(partido.get("fecha"))
-        if fecha_obj and fecha_obj in fechas_obj:
+        if fecha_obj and fecha_obj in fechas_validas:
             partidos_filtrados.append(partido)
     return partidos_filtrados
 
-def formato_mensaje_partidos(agrupados, fechas_obj):
+def formato_mensaje_partidos(agrupados):
     mensaje = "⚽ *Cartelera de Partidos Televisados*\n"
-    fechas_ordenadas = sorted({f for (f, c) in agrupados.keys() if fecha_en_partido(f) in fechas_obj}, key=lambda x: fecha_en_partido(x))
+    fechas_validas = dias_a_mostrar()
+    fechas_ordenadas = sorted({f for (f, c) in agrupados.keys() if fecha_en_partido(f) in fechas_validas}, key=lambda x: fecha_en_partido(x))
     for fecha in fechas_ordenadas:
         mensaje += f"\n📅 *{fecha}*\n"
         campeonatos = sorted({c for (f, c) in agrupados.keys() if f == fecha})
@@ -120,16 +122,12 @@ def formato_mensaje_partidos(agrupados, fechas_obj):
 async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         partidos = await scrape_cartelera_table()
-        if not partidos:
-            await update.message.reply_text("No hay eventos deportivos programados para hoy ni mañana.")
-            return
-        fechas_obj = dias_a_mostrar()
-        partidos_dias = filtra_partidos_por_dia(partidos, fechas_obj)
+        partidos_dias = filtra_partidos_por_dia(partidos)
         if not partidos_dias:
             await update.message.reply_text("No hay partidos para hoy ni mañana.")
             return
         agrupados = agrupa_partidos_por_campeonato(partidos_dias)
-        mensaje = formato_mensaje_partidos(agrupados, fechas_obj)
+        mensaje = formato_mensaje_partidos(agrupados)
         await update.message.reply_text(mensaje, parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"Error: {str(e)}")
@@ -139,16 +137,12 @@ async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
     try:
         partidos = await scrape_cartelera_table()
-        if not partidos:
-            await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text="No hay eventos deportivos programados para hoy ni mañana.")
-            return
-        fechas_obj = dias_a_mostrar()
-        partidos_dias = filtra_partidos_por_dia(partidos, fechas_obj)
+        partidos_dias = filtra_partidos_por_dia(partidos)
         if not partidos_dias:
             await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text="No hay partidos para hoy ni mañana.")
             return
         agrupados = agrupa_partidos_por_campeonato(partidos_dias)
-        mensaje = formato_mensaje_partidos(agrupados, fechas_obj)
+        mensaje = formato_mensaje_partidos(agrupados)
         await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text=mensaje, parse_mode="Markdown")
     except Exception as e:
         await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text=f"Error al obtener cartelera: {str(e)}")
@@ -185,7 +179,6 @@ async def enviar_texto_body(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- MODO NOCHE MANUAL ---
 async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    # Identifica administradores automáticamente
     chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
     admin_ids = [admin.user.id for admin in chat_admins]
     if user_id not in admin_ids:
@@ -269,7 +262,6 @@ async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE
     hora = datetime.datetime.now(TZ).hour
     if 23 <= hora or hora < 8:
         user_id = update.effective_user.id
-        # Identifica administradores automáticamente
         chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
         admin_ids = [admin.user.id for admin in chat_admins]
         if user_id in admin_ids:
@@ -279,7 +271,6 @@ async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE
 # --- RESPUESTA GENERAL EN GRUPO ---
 async def respuesta_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    # Identifica administradores automáticamente
     chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
     admin_ids = [admin.user.id for admin in chat_admins]
     if user_id in admin_ids:
@@ -356,7 +347,6 @@ def main():
         )
     )
 
-    # --- WEBHOOK ---
     application.run_webhook(
         listen="0.0.0.0",
         port=int(os.environ.get("PORT", 8080)),
