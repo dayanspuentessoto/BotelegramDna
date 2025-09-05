@@ -82,10 +82,8 @@ async def scrape_cartelera_table():
 
 def dias_a_mostrar():
     hoy = datetime.datetime.now(TZ).date()
-    return [
-        hoy,  # Hoy
-        hoy + datetime.timedelta(days=1),  # Mañana
-    ]
+    manana = hoy + datetime.timedelta(days=1)
+    return [hoy, manana]
 
 def fecha_en_partido(fecha_str):
     import re
@@ -124,12 +122,12 @@ async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         partidos = await scrape_cartelera_table()
         if not partidos:
-            await update.message.reply_text("No hay eventos deportivos programados para hoy ni próximos días.")
+            await update.message.reply_text("No hay eventos deportivos programados para hoy ni mañana.")
             return
         fechas_obj = dias_a_mostrar()
         partidos_dias = filtra_partidos_por_dia(partidos, fechas_obj)
         if not partidos_dias:
-            await update.message.reply_text("No hay partidos para hoy ni próximos días.")
+            await update.message.reply_text("No hay partidos para hoy ni mañana.")
             return
         agrupados = agrupa_partidos_por_campeonato(partidos_dias)
         mensaje = formato_mensaje_partidos(agrupados, fechas_obj)
@@ -143,12 +141,12 @@ async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
     try:
         partidos = await scrape_cartelera_table()
         if not partidos:
-            await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text="No hay eventos deportivos programados para hoy ni próximos días.")
+            await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text="No hay eventos deportivos programados para hoy ni mañana.")
             return
         fechas_obj = dias_a_mostrar()
         partidos_dias = filtra_partidos_por_dia(partidos, fechas_obj)
         if not partidos_dias:
-            await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text="No hay partidos para hoy ni próximos días.")
+            await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text="No hay partidos para hoy ni mañana.")
             return
         agrupados = agrupa_partidos_por_campeonato(partidos_dias)
         mensaje = formato_mensaje_partidos(agrupados, fechas_obj)
@@ -234,7 +232,6 @@ def obtener_saludo():
 
 # --- MENSAJE BIENVENIDA ---
 async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Este handler se activa en ChatMemberHandler.CHAT_MEMBER
     chat_member = update.chat_member
     # Solo si hay nuevos miembros
     if chat_member.new_chat_members:
