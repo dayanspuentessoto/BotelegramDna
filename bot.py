@@ -28,8 +28,16 @@ async def scrape_cartelera():
         page = await browser.new_page()
         await page.goto(CARTELERA_URL)
 
-        # Esperar hasta que se carguen los eventos (si existen)
-        await page.wait_for_selector("div.cartelera_fecha")
+        try:
+            # Esperar hasta que se carguen los eventos (si existen), con un mayor tiempo de espera
+            await page.wait_for_selector("div.cartelera_fecha", timeout=60000)  # Aumento el tiempo de espera a 60 segundos
+        except TimeoutError:
+            print("No se pudo cargar el selector en el tiempo esperado.")
+            await browser.close()  # Cerrar el navegador al terminar
+            return []
+
+        # Agregar un pequeño retraso explícito por si la página aún está cargando dinámicamente
+        await page.wait_for_timeout(5000)
 
         # Obtener el contenido de la página después de cargar JavaScript
         html = await page.content()
