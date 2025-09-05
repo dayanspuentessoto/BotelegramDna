@@ -13,14 +13,14 @@ GENERAL_CHAT_ID = "-2421748184"      # Grupo principal D.N.A TV
 GROUP_ID = "-2421748184"             # Igual que GENERAL_CHAT_ID
 CANAL_EVENTOS_ID = "-1002421748184"  # Canal EVENTOS DEPORTIVOS
 
-CARTELERA_URL = "https://www.emol.com/movil/deportes/carteleradirecttv/index.aspx"
+CARTELERA_URL = "https://www.futbolenvivochile.com/"
 TZ = datetime.timezone.utc
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
-# --- Scraping Cartelera ---
+# --- Scraping Cartelera de Futbol en Vivo Chile ---
 async def scrape_cartelera():
     async with async_playwright() as p:
         # Lanzar el navegador en modo "headless" (sin interfaz gráfica)
@@ -30,7 +30,7 @@ async def scrape_cartelera():
 
         try:
             # Esperar hasta que se carguen los eventos (si existen), con un mayor tiempo de espera
-            await page.wait_for_selector("div.cartelera_fecha", timeout=60000)  # Aumento el tiempo de espera a 60 segundos
+            await page.wait_for_selector("div.fc-event", timeout=60000)  # Aumento el tiempo de espera a 60 segundos
         except TimeoutError:
             print("No se pudo cargar el selector en el tiempo esperado.")
             await browser.close()  # Cerrar el navegador al terminar
@@ -46,27 +46,29 @@ async def scrape_cartelera():
         eventos = []
         tomorrow = datetime.datetime.now(TZ).date() + datetime.timedelta(days=1)  # Día siguiente
 
-        for bloque_fecha in soup.find_all("div", class_="cartelera_fecha"):
-            fecha = bloque_fecha.get_text(strip=True)
-            fecha_evento = datetime.datetime.strptime(fecha, "%d/%m").date().replace(year=tomorrow.year)  # Convertimos la fecha a formato de fecha
+        # Aquí ajustamos para capturar los eventos de fútbol
+        for evento in soup.find_all("div", class_="fc-event"):
+            fecha = evento.find_previous("span", class_="fc-event-title")
+            horario = evento.find("div", class_="fc-event-time")
+            nombre_equipo = evento.find("div", class_="fc-event-title")
+            canales = evento.find("div", class_="fc-event-location")
 
-            # Filtramos solo eventos del día siguiente
+            if not fecha or not horario or not nombre_equipo or not canales:
+                continue
+
+            # La fecha de los eventos
+            fecha_evento = datetime.datetime.strptime(fecha.get_text(strip=True), "%d-%m-%Y").date().replace(year=tomorrow.year)  # Convertimos la fecha a formato de fecha
+            
+            # Filtrar solo los eventos del día siguiente
             if fecha_evento != tomorrow:
                 continue
 
-            bloque_eventos = bloque_fecha.find_next_sibling("div", class_="cartelera_eventos")
-            if not bloque_eventos:
-                continue
-            for evento in bloque_eventos.find_all("div", class_="cartelera_evento"):
-                hora = evento.find("div", class_="cartelera_hora")
-                nombre = evento.find("div", class_="cartelera_nombre")
-                logo_img = evento.find("img")
-                eventos.append({
-                    "fecha": fecha,
-                    "hora": hora.get_text(strip=True) if hora else "",
-                    "nombre": nombre.get_text(strip=True) if nombre else "",
-                    "logo": logo_img['src'] if logo_img and logo_img.has_attr('src') else ""
-                })
+            eventos.append({
+                "fecha": fecha.get_text(strip=True),
+                "hora": horario.get_text(strip=True),
+                "nombre": nombre_equipo.get_text(strip=True),
+                "canales": canales.get_text(strip=True),  # Los canales que transmiten
+            })
 
         await browser.close()  # Cerrar el navegador al terminar
         return eventos
@@ -78,11 +80,8 @@ async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text="No hay eventos deportivos programados para mañana.")
         return
     for evento in eventos:
-        texto = f"📅 *{evento['fecha']}*\n*{evento['hora']}*\n_{evento['nombre']}_"
-        if evento['logo']:
-            await context.bot.send_photo(chat_id=CANAL_EVENTOS_ID, photo=evento['logo'], caption=texto, parse_mode="Markdown")
-        else:
-            await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text=texto, parse_mode="Markdown")
+        texto = f"📅 *{evento['fecha']}*\n*{evento['hora']}*\n_{evento['nombre']}_\nCanales: {evento['canales']}"
+        await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text=texto, parse_mode="Markdown")
 
 # --- Comando /cartelera manual ---
 async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -91,11 +90,8 @@ async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No hay eventos deportivos programados para mañana.")
         return
     for evento in eventos:
-        texto = f"📅 *{evento['fecha']}*\n*{evento['hora']}*\n_{evento['nombre']}_"
-        if evento['logo']:
-            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=evento['logo'], caption=texto, parse_mode="Markdown")
-        else:
-            await update.message.reply_text(texto, parse_mode="Markdown")
+        texto = f"📅 *{evento['fecha']}*\n*{evento['hora']}*\n_{evento['nombre']}_\nCanales: {evento['canales']}"
+        await update.message.reply_text(texto, parse_mode="Markdown")
 
 # --- Modo noche manual ---
 async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
