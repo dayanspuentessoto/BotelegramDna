@@ -21,7 +21,7 @@ logging.basicConfig(
 def dias_a_mostrar():
     hoy = datetime.datetime.now(TZ).date()
     manana = hoy + datetime.timedelta(days=1)
-    return [hoy, manana]
+    return hoy, manana
 
 def fecha_en_partido(fecha_str):
     import re
@@ -96,55 +96,60 @@ async def scrape_cartelera_table():
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         await page.goto(CARTELERA_URL, timeout=120000)
-        # Scroll para cargar todo el contenido (mejora para lazy loading)
         for _ in range(10):
             await page.evaluate("window.scrollBy(0, window.innerHeight);")
             await page.wait_for_timeout(800)
-        # Captura todo el HTML del body (no solo una tabla)
         html = await page.inner_html("body")
         await browser.close()
         return parse_cartelera(html)
 
-def filtra_partidos_por_dia(partidos):
-    fechas_validas = dias_a_mostrar()
+def filtra_partidos_por_fecha(partidos, fecha_filtrar):
     partidos_filtrados = []
     for partido in partidos:
         fecha_obj = fecha_en_partido(partido.get("fecha"))
-        if fecha_obj and fecha_obj in fechas_validas:
+        if fecha_obj and fecha_obj == fecha_filtrar:
             partidos_filtrados.append(partido)
     return partidos_filtrados
 
-def formato_mensaje_partidos(agrupados):
-    mensaje = "⚽ *Cartelera de Partidos Televisados*\n"
-    fechas_validas = dias_a_mostrar()
-    fechas_ordenadas = sorted(
-        {f for (f, c) in agrupados.keys() if fecha_en_partido(f) in fechas_validas},
-        key=lambda x: fecha_en_partido(x)
-    )
-    for fecha in fechas_ordenadas:
-        mensaje += f"\n📅 *{fecha}*\n"
-        campeonatos = sorted({c for (f, c) in agrupados.keys() if f == fecha})
-        for campeonato in campeonatos:
-            mensaje += f"\n🏆 *{campeonato}*\n"
-            partidos = agrupados.get((fecha, campeonato), [])
-            for partido in partidos:
-                canales_str = ", ".join(partido['canales']) if partido['canales'] else "Sin canal"
-                mensaje += (
-                    f"• {partido['hora']} | {partido['local']} vs {partido['visitante']} | {canales_str}\n"
-                )
+def formato_mensaje_partidos(agrupados, fecha):
+    mensaje = f"⚽ *Cartelera de Partidos Televisados - {fecha.strftime('%d-%m-%Y')}*\n"
+    campeonatos = sorted({c for (f, c) in agrupados.keys() if fecha_en_partido(f) == fecha})
+    for campeonato in campeonatos:
+        mensaje += f"\n🏆 *{campeonato}*\n"
+        partidos = agrupados.get((fecha.strftime('%d-%m-%Y'), campeonato), [])
+        for partido in partidos:
+            canales_str = ", ".join(partido['canales']) if partido['canales'] else "Sin canal"
+            mensaje += (
+                f"• {partido['hora']} | {partido['local']} vs {partido['visitante']} | {canales_str}\n"
+            )
     return mensaje
 
-# --- COMANDO /cartelera: Muestra partidos organizados por campeonato y día ---
+async def send_long_message(bot, chat_id, text, parse_mode=None):
+    for i in range(0, len(text), 4000):
+        await bot.send_message(chat_id=chat_id, text=text[i:i+4000], parse_mode=parse_mode)
+
+# --- COMANDO /cartelera: Muestra partidos en dos mensajes, día actual y siguiente ---
 async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        hoy, manana = dias_a_mostrar()
         partidos = await scrape_cartelera_table()
-        partidos_dias = filtra_partidos_por_dia(partidos)
-        if not partidos_dias:
-            await update.message.reply_text("No hay partidos para hoy ni mañana.")
-            return
-        agrupados = agrupa_partidos_por_campeonato(partidos_dias)
-        mensaje = formato_mensaje_partidos(agrupados)
-        await update.message.reply_text(mensaje, parse_mode="Markdown")
+        partidos_hoy = filtra_partidos_por_fecha(partidos, hoy)
+        partidos_manana = filtra_partidos_por_fecha(partidos, manana)
+
+        if partidos_hoy:
+            agrupados_hoy = agrupa_partidos_por_campeonato(partidos_hoy)
+            mensaje_hoy = formato_mensaje_partidos(agrupados_hoy, hoy)
+            await send_long_message(context.bot, update.effective_chat.id, mensaje_hoy, parse_mode="Markdown")
+        else:
+            await update.message.reply_text("No hay partidos para hoy.")
+
+        if partidos_manana:
+            agrupados_manana = agrupa_partidos_por_campeonato(partidos_manana)
+            mensaje_manana = formato_mensaje_partidos(agrupados_manana, manana)
+            await send_long_message(context.bot, update.effective_chat.id, mensaje_manana, parse_mode="Markdown")
+        else:
+            await update.message.reply_text("No hay partidos para mañana.")
+
     except Exception as e:
         await update.message.reply_text(f"Error: {str(e)}")
         logging.error(f"Error en /cartelera: {e}")
@@ -152,14 +157,25 @@ async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- ENVÍO AUTOMÁTICO DIARIO AL CANAL DE EVENTOS DEPORTIVOS ---
 async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
     try:
+        hoy, manana = dias_a_mostrar()
         partidos = await scrape_cartelera_table()
-        partidos_dias = filtra_partidos_por_dia(partidos)
-        if not partidos_dias:
-            await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text="No hay partidos para hoy ni mañana.")
-            return
-        agrupados = agrupa_partidos_por_campeonato(partidos_dias)
-        mensaje = formato_mensaje_partidos(agrupados)
-        await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text=mensaje, parse_mode="Markdown")
+        partidos_hoy = filtra_partidos_por_fecha(partidos, hoy)
+        partidos_manana = filtra_partidos_por_fecha(partidos, manana)
+
+        if partidos_hoy:
+            agrupados_hoy = agrupa_partidos_por_campeonato(partidos_hoy)
+            mensaje_hoy = formato_mensaje_partidos(agrupados_hoy, hoy)
+            await send_long_message(context.bot, CANAL_EVENTOS_ID, mensaje_hoy, parse_mode="Markdown")
+        else:
+            await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text="No hay partidos para hoy.")
+
+        if partidos_manana:
+            agrupados_manana = agrupa_partidos_por_campeonato(partidos_manana)
+            mensaje_manana = formato_mensaje_partidos(agrupados_manana, manana)
+            await send_long_message(context.bot, CANAL_EVENTOS_ID, mensaje_manana, parse_mode="Markdown")
+        else:
+            await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text="No hay partidos para mañana.")
+
     except Exception as e:
         await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text=f"Error al obtener cartelera: {str(e)}")
         logging.error(f"Error en envío diario: {e}")
@@ -176,7 +192,7 @@ async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await page.wait_for_timeout(800)
             html = await page.inner_html("body")
             await browser.close()
-            await update.message.reply_text(html[:4000])
+            await send_long_message(context.bot, update.effective_chat.id, html[:4000])
     except Exception as e:
         await update.message.reply_text(f"Error al obtener HTML: {e}")
 
@@ -192,7 +208,7 @@ async def enviar_texto_body(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await page.wait_for_timeout(800)
             texto = await page.inner_text("body")
             await browser.close()
-            await update.message.reply_text(texto[:4000])
+            await send_long_message(context.bot, update.effective_chat.id, texto[:4000])
     except Exception as e:
         await update.message.reply_text(f"Error al obtener texto: {e}")
 
