@@ -11,20 +11,19 @@ from telegram.ext import (
 
 # --- CONFIGURACIÓN ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-ADMIN_IDS = [5032964793]  # Tu ID de usuario de Telegram, agrega más si tienes otros admins
-GROUP_ID = int(os.environ.get("GROUP_ID", "-100XXXXXXXXX"))  # Ajusta tu id real si lo necesitas
-GENERAL_CHAT_ID = int(os.environ.get("GENERAL_CHAT_ID", "-100XXXXXXXXX"))  # Ajusta tu id real si lo necesitas
+ADMIN_IDS = [5032964793]
+GENERAL_CHAT_ID = "-2421748184"  # ID real de tu grupo D.N.A. TV
+GROUP_ID = "-2421748184"         # ID real de tu grupo D.N.A. TV
 
 CARTELERA_URL = "https://www.emol.com/movil/deportes/carteleradirecttv/index.aspx"
 TZ = ZoneInfo("America/Santiago")
-
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
 # --- Scraping Cartelera ---
-async def scrape_cartelera(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+async def scrape_cartelera(context: ContextTypes.DEFAULT_TYPE, chat_id):
     try:
         resp = requests.get(CARTELERA_URL, timeout=10)
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -72,7 +71,7 @@ async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Modo noche activado manualmente hasta las 08:00.")
 
 # --- Modo noche automático ---
-async def activar_modo_noche(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+async def activar_modo_noche(context: ContextTypes.DEFAULT_TYPE, chat_id):
     permisos = ChatPermissions(
         can_send_messages=False,
         can_send_media_messages=False,
@@ -113,11 +112,14 @@ def obtener_saludo():
 # --- Mensaje bienvenida ---
 async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for member in update.chat_member.new_chat_members:
-        nombre = member.full_name if hasattr(member, 'full_name') and member.full_name else \
-            (member.username if member.username else "Usuario")
+        nombre = member.first_name if member.first_name else ""
+        apellidos = member.last_name if member.last_name else ""
+        nombre_completo = f"{nombre} {apellidos}".strip()
+        if not nombre_completo:
+            nombre_completo = member.username if member.username else "Usuario"
         await context.bot.send_message(
             GENERAL_CHAT_ID,
-            text=f"{nombre} BIENVENIDO(A) A NUESTRO SELECTO GRUPO, MANTENTE SIEMPRE AL DIA Y ACTUALIZADO, SI TIENES ALGUNA DUDA ESCRIBE EL COMANDO AYUDA PARA MAS INFO 😎🤖",
+            text=f"{nombre_completo} BIENVENIDO(A) A NUESTRO SELECTO GRUPO D.N.A. TV, MANTENTE SIEMPRE AL DIA Y ACTUALIZADO, SI TIENES ALGUNA DUDA ESCRIBE EL COMANDO AYUDA PARA MAS INFO 😎🤖",
         )
 
 # --- Mensaje despedida ---
@@ -125,11 +127,14 @@ async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.chat_member.old_chat_member.status not in ['left', 'kicked']:
         return
     user = update.chat_member.old_chat_member.user
-    nombre = user.full_name if hasattr(user, 'full_name') and user.full_name else \
-        (user.username if user.username else "Usuario")
+    nombre = user.first_name if user.first_name else ""
+    apellidos = user.last_name if user.last_name else ""
+    nombre_completo = f"{nombre} {apellidos}".strip()
+    if not nombre_completo:
+        nombre_completo = user.username if user.username else "Usuario"
     await context.bot.send_message(
         GENERAL_CHAT_ID,
-        text=f"{nombre} ADIOS, DESPUES NO RECLAMES NI PREGUNTES🤷🏻‍♂"
+        text=f"{nombre_completo} ADIOS, DESPUES NO RECLAMES NI PREGUNTES🤷🏻‍♂"
     )
 
 # --- Filtro de mensajes modo noche ---
@@ -157,7 +162,7 @@ async def respuesta_privada(update: Update, context: ContextTypes.DEFAULT_TYPE):
     saludo = obtener_saludo()
     await update.message.reply_text(
         f"{saludo} 👋 Soy un bot automático.\n"
-        "Si tienes preguntas o necesitas soporte, por favor contacta directamente al administrador (@tvtv132023-byte).\n"
+        "Si tienes preguntas o necesitas soporte, por favor contacta directamente al administrador (@Daayaanss).\n"
         "También puedes escribir /ayuda para ver información y recursos útiles."
     )
 
@@ -166,11 +171,10 @@ async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = (
         "👋 ¡Hola! Tu mensaje ha sido recibido.\n"
         "El administrador se comunicará contigo pronto.\n\n"
-        "Mientras esperas, puedes revisar el canal de actualizaciones de app gratuitas para ver si se resuelven tus dudas:\n"
-        "👉 [Canal de actualizaciones](https://t.me/appgratuita)\n\n"
+        "Mientras esperas, revisa la sección ACTUALIZACIONES DE APPS GRATUITAS que está dentro de este grupo D.N.A. TV.\n"
         "Si tienes otra pregunta, escríbela aquí. ¡Gracias!"
     )
-    await update.message.reply_text(texto, parse_mode="Markdown", disable_web_page_preview=True)
+    await update.message.reply_text(texto)
 
 # --- MAIN ---
 def main():
