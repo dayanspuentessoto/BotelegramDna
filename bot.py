@@ -216,7 +216,7 @@ def main():
     # --- WEBHOOK ---
     application.run_webhook(
         listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 8443)),
+        port=int(os.environ.get("PORT", 8080)),  # <-- Cambiado el default a 8080
         webhook_url=os.environ.get("WEBHOOK_URL")
     )
 
