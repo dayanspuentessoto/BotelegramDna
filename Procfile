@@ -1,1 +1,1 @@
-web: pip install -r requirements.txt && playwright install --with-deps && python bot.py
+web: playwright install --with-deps && python bot.py
