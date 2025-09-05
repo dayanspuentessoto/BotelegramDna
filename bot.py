@@ -6,7 +6,7 @@ from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 PORT = int(os.environ.get('PORT', '8080'))
-WEBHOOK_PATH = f"/webhook/{TOKEN[:10]}"  # El path único del webhook
+WEBHOOK_PATH = f"/webhook/{TOKEN[:10]}"  # Usado solo para generar la URL
 
 GRUPO_NOMBRE = "D.N.A. TV"
 CANAL_GENERAL = "General"
@@ -120,14 +120,14 @@ def main():
     app.job_queue.run_repeating(aviso_fin_modo_noche, interval=60, first=0)
 
     url_base = os.environ.get('WEBHOOK_BASE', '')
-    webhook_url = f"{url_base}{WEBHOOK_PATH}"
+    webhook_url = f"{url_base}/"  # Asegura que sea el endpoint raíz
     print(f"Usando webhook URL: {webhook_url}")
 
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
-        webhook_url=webhook_url,
-        webhook_path=WEBHOOK_PATH  # <-- Esto es muy importante para Telegram
+        webhook_url=webhook_url
+        # webhook_path eliminado
     )
 
 if __name__ == "__main__":
