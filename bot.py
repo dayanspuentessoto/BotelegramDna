@@ -12,8 +12,9 @@ from telegram.ext import (
 # --- CONFIGURACIÓN ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 ADMIN_IDS = [5032964793]
-GENERAL_CHAT_ID = "-2421748184"
-GROUP_ID = "-2421748184"
+GENERAL_CHAT_ID = "-2421748184"      # Grupo principal D.N.A TV
+GROUP_ID = "-2421748184"             # Igual que GENERAL_CHAT_ID
+CANAL_EVENTOS_ID = "-1002421748184"  # Canal EVENTOS DEPORTIVOS
 
 CARTELERA_URL = "https://www.emol.com/movil/deportes/carteleradirecttv/index.aspx"
 TZ = ZoneInfo("America/Santiago")
@@ -23,46 +24,55 @@ logging.basicConfig(
 )
 
 # --- Scraping Cartelera ---
-async def scrape_cartelera(context: ContextTypes.DEFAULT_TYPE, chat_id):
-    try:
-        resp = requests.get(CARTELERA_URL, timeout=10)
-        soup = BeautifulSoup(resp.text, "html.parser")
-        eventos_encontrados = False
+def scrape_cartelera():
+    resp = requests.get(CARTELERA_URL, timeout=10)
+    soup = BeautifulSoup(resp.text, "html.parser")
+    eventos = []
 
-        for bloque_fecha in soup.find_all("div", class_="cartelera_fecha"):
-            fecha = bloque_fecha.get_text(strip=True)
-            await context.bot.send_message(chat_id=chat_id, text=f"📅 {fecha}")
+    for bloque_fecha in soup.find_all("div", class_="cartelera_fecha"):
+        fecha = bloque_fecha.get_text(strip=True)
+        bloque_eventos = bloque_fecha.find_next_sibling("div", class_="cartelera_eventos")
+        if not bloque_eventos:
+            continue
+        for evento in bloque_eventos.find_all("div", class_="cartelera_evento"):
+            hora = evento.find("div", class_="cartelera_hora")
+            nombre = evento.find("div", class_="cartelera_nombre")
+            logo_img = evento.find("img")
+            eventos.append({
+                "fecha": fecha,
+                "hora": hora.get_text(strip=True) if hora else "",
+                "nombre": nombre.get_text(strip=True) if nombre else "",
+                "logo": logo_img['src'] if logo_img and logo_img.has_attr('src') else ""
+            })
+    return eventos
 
-            bloque_eventos = bloque_fecha.find_next_sibling("div", class_="cartelera_eventos")
-            if not bloque_eventos:
-                continue
+# --- Envío diario de eventos al canal EVENTOS DEPORTIVOS ---
+async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
+    eventos = scrape_cartelera()
+    if not eventos:
+        await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text="No hay eventos deportivos programados para hoy y mañana.")
+        return
+    for evento in eventos:
+        texto = f"📅 *{evento['fecha']}*\n*{evento['hora']}*\n_{evento['nombre']}_"
+        if evento['logo']:
+            await context.bot.send_photo(chat_id=CANAL_EVENTOS_ID, photo=evento['logo'], caption=texto, parse_mode="Markdown")
+        else:
+            await context.bot.send_message(chat_id=CANAL_EVENTOS_ID, text=texto, parse_mode="Markdown")
 
-            for evento in bloque_eventos.find_all("div", class_="cartelera_evento"):
-                hora = evento.find("div", class_="cartelera_hora")
-                hora_txt = hora.get_text(strip=True) if hora else ""
-
-                nombre = evento.find("div", class_="cartelera_nombre")
-                nombre_txt = nombre.get_text(strip=True) if nombre else ""
-
-                logo_img = evento.find("img")
-                logo_url = logo_img['src'] if logo_img and logo_img.has_attr('src') else ""
-
-                mensaje = f"🕒 {hora_txt}\n🏟️ {nombre_txt}"
-                await context.bot.send_message(chat_id=chat_id, text=mensaje)
-                if logo_url:
-                    await context.bot.send_photo(chat_id=chat_id, photo=logo_url)
-                eventos_encontrados = True
-
-        if not eventos_encontrados:
-            await context.bot.send_message(chat_id=chat_id, text="No hay eventos deportivos programados para hoy y mañana.")
-    except Exception as e:
-        await context.bot.send_message(chat_id=chat_id, text=f"Error obteniendo cartelera: {e}")
-
-# --- Comando /cartelera ---
+# --- Comando /cartelera manual ---
 async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await scrape_cartelera(context, update.effective_chat.id)
+    eventos = scrape_cartelera()
+    if not eventos:
+        await update.message.reply_text("No hay eventos deportivos programados para hoy y mañana.")
+        return
+    for evento in eventos:
+        texto = f"📅 *{evento['fecha']}*\n*{evento['hora']}*\n_{evento['nombre']}_"
+        if evento['logo']:
+            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=evento['logo'], caption=texto, parse_mode="Markdown")
+        else:
+            await update.message.reply_text(texto, parse_mode="Markdown")
 
-# --- Comando /noche manual ---
+# --- Modo noche manual ---
 async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("Solo el administrador puede activar el modo noche manualmente.")
@@ -183,6 +193,7 @@ def main():
     application.add_handler(CommandHandler("noche", modo_noche_manual))
     application.add_handler(CommandHandler("ayuda", ayuda))
 
+    # Jobs automáticos
     application.job_queue.run_daily(
         lambda context: activar_modo_noche(context, GENERAL_CHAT_ID),
         time=datetime.time(hour=23, minute=0, tzinfo=TZ),
@@ -192,6 +203,12 @@ def main():
         desactivar_modo_noche,
         time=datetime.time(hour=8, minute=0, tzinfo=TZ),
         name="desactivar_modo_noche"
+    )
+    # Eventos deportivos diario, canal eventos
+    application.job_queue.run_daily(
+        enviar_eventos_diarios,
+        time=datetime.time(hour=10, minute=0, tzinfo=TZ),
+        name="eventos_diarios"
     )
 
     application.add_handler(ChatMemberHandler(bienvenida, ChatMemberHandler.CHAT_MEMBER))
@@ -216,7 +233,7 @@ def main():
     # --- WEBHOOK ---
     application.run_webhook(
         listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 8080)),  # <-- Cambiado el default a 8080
+        port=int(os.environ.get("PORT", 8080)),
         webhook_url=os.environ.get("WEBHOOK_URL")
     )
 
