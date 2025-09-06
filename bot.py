@@ -160,11 +160,6 @@ async def scrape_mgs_content():
             prev_height = curr_height
         html = await page.content()
         await browser.close()
-        try:
-            with open("debug_mgs.html", "w", encoding="utf-8") as f:
-                f.write(html)
-        except Exception as e:
-            logging.error(f"No se pudo guardar debug_mgs.html: {e}")
         soup = BeautifulSoup(html, "html.parser")
 
         texto = soup.get_text("\n", strip=True)
@@ -271,42 +266,20 @@ async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
 async def pelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         data = await scrape_mgs_content()
-        if update.effective_chat.type == "private":
-            html_file_path = "debug_mgs.html"
-            async with aiofiles.open(html_file_path, "w", encoding="utf-8") as f:
-                await f.write(data.get("html", ""))
-            await context.bot.send_document(
-                chat_id=update.effective_chat.id,
-                document=open(html_file_path, "rb"),
-                caption="Archivo HTML del contenido MGS para inspección.",
-            )
         if not data:
             await send_long_message(context.bot, update.effective_chat.id, "No se pudo obtener datos de la web.", parse_mode="Markdown")
             logging.error("scrape_mgs_content retornó None")
             return
-
         msgs = formato_mgs_msgs(data)
         if not msgs:
             await send_long_message(context.bot, update.effective_chat.id, "No hay contenido disponible.", parse_mode="Markdown")
             return
-
         fecha_txt = data.get('fecha', '')
         if fecha_txt:
             fecha_txt = f"*{fecha_txt}*"
-
-        if update.effective_chat.type == "private":
-            if fecha_txt:
-                await send_long_message(context.bot, update.effective_chat.id, fecha_txt, parse_mode="Markdown")
-            for msg in msgs:
-                await send_long_message(context.bot, update.effective_chat.id, msg, parse_mode="Markdown")
-        else:
-            if fecha_txt:
-                await send_long_message(context.bot, MGS_GROUP_ID, fecha_txt, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
-            for msg in msgs:
-                await send_long_message(context.bot, MGS_GROUP_ID, msg, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
-            thread_actual = getattr(getattr(update, "message", None), "message_thread_id", None)
-            if thread_actual != MGS_THREAD_ID:
-                await send_long_message(context.bot, MGS_GROUP_ID, "El listado fue enviado al tema Actualización de contenido APP MGS.", thread_id=MGS_THREAD_ID)
+            await send_long_message(context.bot, update.effective_chat.id, fecha_txt, parse_mode="Markdown")
+        for msg in msgs:
+            await send_long_message(context.bot, update.effective_chat.id, msg, parse_mode="Markdown")
     except Exception as e:
         await send_long_message(context.bot, update.effective_chat.id, f"Error: {e}", parse_mode="Markdown")
         logging.error(f"Error en /pelis: {e}")
