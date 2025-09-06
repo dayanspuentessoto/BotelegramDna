@@ -203,16 +203,24 @@ async def scrape_mgs_content():
 
 def formato_mgs_msgs(data):
     msgs = []
-    if data['fecha']:
-        msgs.append(f"*{data['fecha']}*")
+    FILTROS = [
+        "Todos los derechos",
+        "Impulsado por Lynkbe.com",
+        "Scroll al inicio"
+    ]
     for nombre, items in data.get("categorias", {}).items():
-        if items:
+        items_filtrados = [
+            item for item in items
+            if not any(filtro.lower() in item.lower() for filtro in FILTROS)
+            and item.strip() != ""
+        ]
+        if items_filtrados:
             msg = f"🎬 *{nombre}:*\n" if nombre.lower().startswith("película") else \
                   f"📺 *{nombre}:*\n" if nombre.lower().startswith("serie") else \
                   f"🧑‍🎤 *{nombre}:*\n" if nombre.lower().startswith("anime") else \
                   f"🦸 *{nombre}:*\n" if nombre.lower().startswith("cartoon") or nombre.lower().startswith("animado") else \
                   f"*{nombre}:*\n"
-            msg += "\n".join(f"• {item}" for item in items)
+            msg += "\n".join(f"• {item}" for item in items_filtrados)
             msgs.append(msg)
     if not msgs:
         logging.error("formato_mgs_msgs retornó []")
@@ -238,6 +246,16 @@ async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
         ultima_fecha = await obtener_ultima_fecha_mgs()
         if data["fecha"] != ultima_fecha:
             msgs = formato_mgs_msgs(data)
+            fecha_txt = data.get('fecha', '')
+            if fecha_txt:
+                fecha_txt = f"*{fecha_txt}*"
+                await send_long_message(
+                    context.bot,
+                    MGS_GROUP_ID,
+                    fecha_txt,
+                    parse_mode="Markdown",
+                    thread_id=MGS_THREAD_ID
+                )
             for msg in msgs:
                 await send_long_message(
                     context.bot,
@@ -252,7 +270,6 @@ async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
 
 async def pelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        await send_long_message(context.bot, update.effective_chat.id, "Procesando, por favor espere...", parse_mode="Markdown")
         data = await scrape_mgs_content()
         if update.effective_chat.type == "private":
             html_file_path = "debug_mgs.html"
@@ -267,14 +284,24 @@ async def pelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_long_message(context.bot, update.effective_chat.id, "No se pudo obtener datos de la web.", parse_mode="Markdown")
             logging.error("scrape_mgs_content retornó None")
             return
+
         msgs = formato_mgs_msgs(data)
         if not msgs:
             await send_long_message(context.bot, update.effective_chat.id, "No hay contenido disponible.", parse_mode="Markdown")
             return
+
+        fecha_txt = data.get('fecha', '')
+        if fecha_txt:
+            fecha_txt = f"*{fecha_txt}*"
+
         if update.effective_chat.type == "private":
+            if fecha_txt:
+                await send_long_message(context.bot, update.effective_chat.id, fecha_txt, parse_mode="Markdown")
             for msg in msgs:
                 await send_long_message(context.bot, update.effective_chat.id, msg, parse_mode="Markdown")
         else:
+            if fecha_txt:
+                await send_long_message(context.bot, MGS_GROUP_ID, fecha_txt, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
             for msg in msgs:
                 await send_long_message(context.bot, MGS_GROUP_ID, msg, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
             thread_actual = getattr(getattr(update, "message", None), "message_thread_id", None)
