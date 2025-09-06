@@ -166,44 +166,35 @@ async def scrape_mgs_content():
         except Exception as e:
             logging.error(f"No se pudo guardar debug_mgs.html: {e}")
         soup = BeautifulSoup(html, "html.parser")
-        fecha_actualizacion = None
-        for tag in soup.find_all(["h1","h2","span"]):
-            txt = tag.get_text(strip=True)
-            if txt.lower().startswith("actualización de contenido"):
-                fecha_actualizacion = txt
-                break
-            if "hasta el" in txt.lower() and "actualización" in txt.lower():
-                fecha_actualizacion = txt
-                break
+
+        texto = soup.get_text("\n", strip=True)
+        lineas = texto.splitlines()
+
         categorias = {}
-        for span in soup.find_all("span"):
-            style = span.get("style", "")
-            texto = span.get_text(strip=True)
-            if "color: red" in style or texto.lower() in ["películas", "series", "anime", "cartoon", "animado"]:
-                items = []
-                curr = span
-                while True:
-                    curr = curr.find_next_sibling()
-                    if not curr or (curr.name in ["span", "h2", "h1"] and curr.get_text(strip=True) != ""): break
-                    if curr.name == "li":
-                        items.append(curr.get_text(strip=True))
-                if items and texto:
-                    categorias[texto.capitalize()] = items
-        for titulo in ["Películas", "Series", "Anime", "Cartoon", "Animado"]:
-            if titulo not in categorias:
-                for tag in soup.find_all(["span", "strong"]):
-                    if tag.get_text(strip=True).lower() == titulo.lower():
-                        items = []
-                        curr = tag
-                        while True:
-                            curr = curr.find_next_sibling()
-                            if not curr or curr.name in ["span", "h2", "h1"]: break
-                            if curr.name == "li":
-                                items.append(curr.get_text(strip=True))
-                        if items:
-                            categorias[titulo] = items
+        categoria_actual = None
+        fecha_actualizacion = None
+
+        categorias_claves = ["Películas", "Series", "Anime", "Cartoon/Animado", "Cartoon", "Animado"]
+
+        for idx, linea in enumerate(lineas):
+            linea = linea.strip()
+            if not linea:
+                continue
+            if not fecha_actualizacion and "Actualización de contenido" in linea:
+                fecha_actualizacion = linea
+            if any(linea.lower().startswith(cat.lower()) for cat in categorias_claves):
+                categoria_actual = linea.split(":")[0].strip()
+                if categoria_actual.lower().startswith("cartoon/animado"):
+                    categoria_actual = "Cartoon/Animado"
+                categorias[categoria_actual] = []
+                continue
+            if categoria_actual and not any(linea.lower().startswith(cat.lower()) for cat in categorias_claves):
+                if linea and not linea.lower().startswith("todas las semanas tenemos contenido nuevo"):
+                    categorias[categoria_actual].append(linea)
+
         if not categorias:
             logging.error("No se encontraron categorías en el scraping de MGS.")
+
         return {
             "fecha": fecha_actualizacion,
             "categorias": categorias,
