@@ -4,15 +4,20 @@ from bs4 import BeautifulSoup
 import datetime
 import pytz
 import os
+import aiofiles
 from telegram import Update, ChatPermissions
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters, ChatMemberHandler
 
 # --- CONFIGURACIÓN ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GENERAL_CHAT_ID = -1002421748184  # ID del grupo D.N.A. TV (supergrupo)
-GENERAL_THREAD_ID = 1             # ID del tema "General" (de https://t.me/c/2421748184/1)
+GENERAL_THREAD_ID = 1             # ID del tema "General"
 EVENTOS_DEPORTIVOS_THREAD_ID = 1396  # ID del tema "EVENTOS DEPORTIVOS"
 CARTELERA_URL = "https://www.futbolenvivochile.com/"
+MGS_THREAD_ID = 1437  # Tema "Actualización de contenido APP MGS"
+MGS_GROUP_ID = GENERAL_CHAT_ID
+URL_MGS = "https://magistv.lynkbe.com/new/"
+LAST_MGS_DATE_FILE = "last_mgs_date.txt"
 TZ = pytz.timezone("America/Santiago")
 
 logging.basicConfig(
@@ -97,7 +102,6 @@ async def scrape_cartelera_table():
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         await page.goto(CARTELERA_URL, timeout=120000)
-        # Scroll para carga dinámica
         for _ in range(10):
             await page.evaluate("window.scrollBy(0, window.innerHeight);")
             await page.wait_for_timeout(800)
@@ -131,20 +135,113 @@ async def send_long_message(bot, chat_id, text, parse_mode=None, thread_id=None)
         params = {"chat_id": chat_id, "text": text[i:i+4000]}
         if parse_mode:
             params["parse_mode"] = parse_mode
-        # Solo añade thread_id si es grupo/supergrupo y thread_id está definido
         if thread_id and str(chat_id).startswith("-100"):
             params["message_thread_id"] = thread_id
         await bot.send_message(**params)
 
-# --- COMANDO /cartelera: SIEMPRE envía en el tema EVENTOS DEPORTIVOS salvo privado ---
+# --- SCRAPER MGS ---
+async def scrape_mgs_content():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto(URL_MGS, timeout=120000)
+        html = await page.content()
+        await browser.close()
+        soup = BeautifulSoup(html, "html.parser")
+
+        fecha_actualizacion = None
+        peliculas, series, anime, cartoon = [], [], [], []
+
+        # Buscar fecha de actualización
+        fecha_tag = soup.find("h6", string=lambda x: x and "Actualización de contenido" in x)
+        if fecha_tag:
+            fecha_actualizacion = fecha_tag.get_text(strip=True)
+
+        # Buscar listados
+        secciones = soup.find_all("div", class_="accordion-body")
+        for section in secciones:
+            title_tag = section.find_previous("button")
+            title = title_tag.get_text(strip=True) if title_tag else ""
+            items = [li.get_text(strip=True) for li in section.find_all("li")]
+            if "Películas" in title:
+                peliculas = items
+            elif "Series" in title:
+                series = items
+            elif "Anime" in title:
+                anime = items
+            elif "Cartoon" in title or "Animado" in title:
+                cartoon = items
+
+        return {
+            "fecha": fecha_actualizacion,
+            "peliculas": peliculas,
+            "series": series,
+            "anime": anime,
+            "cartoon": cartoon
+        }
+
+def formato_mgs_msg(data):
+    msg = f"*{data['fecha']}*\n\n"
+    if data["peliculas"]:
+        msg += "🎬 *Películas:*\n" + "\n".join(f"• {p}" for p in data["peliculas"]) + "\n\n"
+    if data["series"]:
+        msg += "📺 *Series:*\n" + "\n".join(f"• {s}" for s in data["series"]) + "\n\n"
+    if data["anime"]:
+        msg += "🧑‍🎤 *Anime:*\n" + "\n".join(f"• {a}" for a in data["anime"]) + "\n\n"
+    if data["cartoon"]:
+        msg += "🦸 *Cartoon/Animado:*\n" + "\n".join(f"• {c}" for c in data["cartoon"]) + "\n\n"
+    return msg.strip()
+
+async def obtener_ultima_fecha_mgs():
+    try:
+        async with aiofiles.open(LAST_MGS_DATE_FILE, mode="r") as f:
+            return (await f.read()).strip()
+    except Exception:
+        return ""
+
+async def guardar_ultima_fecha_mgs(fecha):
+    async with aiofiles.open(LAST_MGS_DATE_FILE, mode="w") as f:
+        await f.write(fecha)
+
+async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        data = await scrape_mgs_content()
+        if not data["fecha"]:
+            return
+        ultima_fecha = await obtener_ultima_fecha_mgs()
+        if data["fecha"] != ultima_fecha:
+            await send_long_message(
+                context.bot,
+                MGS_GROUP_ID,
+                formato_mgs_msg(data),
+                parse_mode="Markdown",
+                thread_id=MGS_THREAD_ID
+            )
+            await guardar_ultima_fecha_mgs(data["fecha"])
+    except Exception as e:
+        logging.error(f"Error en actualización MGS: {e}")
+
+async def pelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        data = await scrape_mgs_content()
+        msg = formato_mgs_msg(data)
+        if update.effective_chat.type == "private":
+            await send_long_message(context.bot, update.effective_chat.id, msg, parse_mode="Markdown")
+        else:
+            await send_long_message(context.bot, MGS_GROUP_ID, msg, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
+            thread_actual = getattr(getattr(update, "message", None), "message_thread_id", None)
+            if thread_actual != MGS_THREAD_ID:
+                await send_long_message(context.bot, MGS_GROUP_ID, "El listado fue enviado al tema Actualización de contenido APP MGS.", thread_id=MGS_THREAD_ID)
+    except Exception as e:
+        await send_long_message(context.bot, MGS_GROUP_ID, f"Error: {e}", thread_id=MGS_THREAD_ID)
+
+# --- COMANDO /cartelera ---
 async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # Determinar el tipo de chat y destino
         if update.effective_chat.type == "private":
             destino = update.effective_chat.id
             thread_id = None
         else:
-            # SIEMPRE envía al tema EVENTOS DEPORTIVOS
             destino = GENERAL_CHAT_ID
             thread_id = EVENTOS_DEPORTIVOS_THREAD_ID
 
@@ -167,7 +264,6 @@ async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await send_long_message(context.bot, destino, "No hay partidos para mañana.", thread_id=thread_id)
 
-        # Si el comando no fue por privado, avisa en el tema actual (solo si no está ya en EVENTOS DEPORTIVOS)
         if update.effective_chat.type != "private":
             thread_actual = None
             if update.message and hasattr(update.message, "message_thread_id"):
@@ -179,7 +275,7 @@ async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_long_message(context.bot, GENERAL_CHAT_ID, f"Error: {str(e)}", thread_id=EVENTOS_DEPORTIVOS_THREAD_ID)
         logging.error(f"Error en /cartelera: {e}")
 
-# --- ENVÍO AUTOMÁTICO DIARIO AL TEMA EVENTOS DEPORTIVOS ---
+# --- ENVÍO AUTOMÁTICO DIARIO CARTELERA ---
 async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
     try:
         hoy, manana = dias_a_mostrar()
@@ -243,7 +339,6 @@ async def enviar_texto_body(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- COMANDO /hora ---
 async def hora_chile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ahora = datetime.datetime.now(TZ)
-    # Responde en privado si el comando fue por privado, si no, en el tema General
     if update.effective_chat.type == "private":
         await update.message.reply_text(
             f"La hora en Chile es: {ahora.strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -268,11 +363,10 @@ async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await activar_modo_noche(context, GENERAL_CHAT_ID)
     await send_long_message(context.bot, GENERAL_CHAT_ID, "Modo noche activado manualmente hasta las 08:00.", thread_id=GENERAL_THREAD_ID)
 
-# --- MODO NOCHE AUTOMÁTICO ---
+# --- MODO NOCHE AUTOMÁTICO (CORREGIDO) ---
 async def activar_modo_noche(context: ContextTypes.DEFAULT_TYPE, chat_id):
     permisos = ChatPermissions(
         can_send_messages=False,
-        can_send_media_messages=False,
         can_send_polls=False,
         can_send_other_messages=False,
         can_add_web_page_previews=False,
@@ -286,7 +380,6 @@ async def activar_modo_noche(context: ContextTypes.DEFAULT_TYPE, chat_id):
 async def desactivar_modo_noche(context: ContextTypes.DEFAULT_TYPE):
     permisos = ChatPermissions(
         can_send_messages=True,
-        can_send_media_messages=True,
         can_send_polls=True,
         can_send_other_messages=True,
         can_add_web_page_previews=True,
@@ -357,7 +450,6 @@ async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- FILTRO DE MENSAJES MODO NOCHE ---
 async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Solo aplica en tema General
     if hasattr(update.message, "message_thread_id"):
         if update.message.message_thread_id != GENERAL_THREAD_ID:
             return
@@ -408,7 +500,6 @@ async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Mientras esperas, revisa la sección ACTUALIZACIONES DE APPS GRATUITAS que está dentro de este grupo D.N.A. TV.\n"
         "Si tienes otra pregunta, escríbela aquí. ¡Gracias!"
     )
-    # Responde en privado si el comando fue por privado, si no, en el tema General
     if update.effective_chat.type == "private":
         await update.message.reply_text(texto)
     else:
@@ -417,13 +508,13 @@ async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Comandos
     application.add_handler(CommandHandler("cartelera", cartelera))
     application.add_handler(CommandHandler("htmlcartelera", enviar_html))
     application.add_handler(CommandHandler("textocartelera", enviar_texto_body))
     application.add_handler(CommandHandler("hora", hora_chile))
     application.add_handler(CommandHandler("noche", modo_noche_manual))
     application.add_handler(CommandHandler("ayuda", ayuda))
+    application.add_handler(CommandHandler("pelis", pelis))
 
     application.job_queue.run_daily(
         lambda context: activar_modo_noche(context, GENERAL_CHAT_ID),
@@ -435,14 +526,17 @@ def main():
         time=datetime.time(hour=8, minute=0, tzinfo=TZ),
         name="desactivar_modo_noche"
     )
-
     application.job_queue.run_daily(
         enviar_eventos_diarios,
         time=datetime.time(hour=10, minute=0, tzinfo=TZ),
         name="cartelera_diaria"
     )
+    application.job_queue.run_daily(
+        enviar_actualizacion_mgs,
+        time=datetime.time(hour=8, minute=30, tzinfo=TZ),
+        name="mgs_actualizacion_diaria"
+    )
 
-    # Bienvenida y despedida: soporta ambos tipos de evento
     application.add_handler(ChatMemberHandler(bienvenida, ChatMemberHandler.CHAT_MEMBER))
     application.add_handler(ChatMemberHandler(despedida, ChatMemberHandler.CHAT_MEMBER))
     application.add_handler(MessageHandler(
@@ -450,14 +544,12 @@ def main():
         bienvenida
     ))
 
-    # RESPUESTA GENERAL: cualquier mensaje en tema General excepto admins
     application.add_handler(
         MessageHandler(
             filters.ALL & filters.Chat(GENERAL_CHAT_ID) & ~filters.COMMAND,
             respuesta_general
         )
     )
-    # FILTRO MODO NOCHE en tema General
     application.add_handler(
         MessageHandler(
             filters.ALL & filters.Chat(GENERAL_CHAT_ID),
