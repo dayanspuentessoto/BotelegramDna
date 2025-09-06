@@ -135,7 +135,8 @@ async def send_long_message(bot, chat_id, text, parse_mode=None, thread_id=None)
         params = {"chat_id": chat_id, "text": text[i:i+4000]}
         if parse_mode:
             params["parse_mode"] = parse_mode
-        if thread_id and str(chat_id).startswith("-100"):
+        # Solo usa thread_id si está definido y válido
+        if thread_id and str(chat_id).startswith("-100") and thread_id > 0:
             params["message_thread_id"] = thread_id
         await bot.send_message(**params)
 
@@ -145,9 +146,8 @@ async def scrape_mgs_content():
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         await page.goto(URL_MGS, timeout=120000)
-        # Scroll lento hasta el fondo (puede necesitar más iteraciones según el contenido)
         prev_height = 0
-        for _ in range(50):  # aumenta a 50 para asegurar carga completa
+        for _ in range(60):  # asegura carga completa
             await page.evaluate("window.scrollBy(0, window.innerHeight);")
             await page.wait_for_timeout(700)
             curr_height = await page.evaluate("document.body.scrollHeight")
@@ -158,7 +158,7 @@ async def scrape_mgs_content():
         await browser.close()
         soup = BeautifulSoup(html, "html.parser")
 
-        # Obtener fecha (busca <span> grande/naranja o h1/h2 con "Actualización")
+        # Obtener fecha
         fecha_actualizacion = None
         for tag in soup.find_all(["h1","h2","span"]):
             txt = tag.get_text(strip=True)
@@ -176,7 +176,6 @@ async def scrape_mgs_content():
             texto = span.get_text(strip=True)
             if "color: red" in style or texto.lower() in ["películas", "series", "anime", "cartoon", "animado"]:
                 items = []
-                # Busca <li> hasta el próximo título
                 curr = span
                 while True:
                     curr = curr.find_next_sibling()
@@ -186,7 +185,6 @@ async def scrape_mgs_content():
                 if items and texto:
                     categorias[texto.capitalize()] = items
 
-        # Si no encontró por color, busca por texto plano
         for titulo in ["Películas", "Series", "Anime", "Cartoon", "Animado"]:
             if titulo not in categorias:
                 for tag in soup.find_all(["span", "strong"]):
@@ -235,7 +233,8 @@ async def guardar_ultima_fecha_mgs(fecha):
 async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
     try:
         data = await scrape_mgs_content()
-        if not data["fecha"]:
+        if not data or not data["fecha"]:
+            logging.error("No se encontró fecha de actualización MGS.")
             return
         ultima_fecha = await obtener_ultima_fecha_mgs()
         if data["fecha"] != ultima_fecha:
@@ -254,8 +253,17 @@ async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
 
 async def pelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        await send_long_message(context.bot, update.effective_chat.id, "Procesando, por favor espere...", parse_mode="Markdown")
         data = await scrape_mgs_content()
+        if not data:
+            await send_long_message(context.bot, update.effective_chat.id, "No se pudo obtener datos de la web.", parse_mode="Markdown")
+            logging.error("scrape_mgs_content retornó None")
+            return
         msgs = formato_mgs_msgs(data)
+        if not msgs:
+            await send_long_message(context.bot, update.effective_chat.id, "No hay contenido disponible.", parse_mode="Markdown")
+            logging.error("formato_mgs_msgs retornó []")
+            return
         if update.effective_chat.type == "private":
             for msg in msgs:
                 await send_long_message(context.bot, update.effective_chat.id, msg, parse_mode="Markdown")
@@ -266,7 +274,8 @@ async def pelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if thread_actual != MGS_THREAD_ID:
                 await send_long_message(context.bot, MGS_GROUP_ID, "El listado fue enviado al tema Actualización de contenido APP MGS.", thread_id=MGS_THREAD_ID)
     except Exception as e:
-        await send_long_message(context.bot, MGS_GROUP_ID, f"Error: {e}", thread_id=MGS_THREAD_ID)
+        await send_long_message(context.bot, update.effective_chat.id, f"Error: {e}", parse_mode="Markdown")
+        logging.error(f"Error en /pelis: {e}")
 
 # --- COMANDO /cartelera ---
 async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -393,8 +402,13 @@ async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in admin_ids:
         await update.message.reply_text("Solo el administrador puede activar el modo noche manualmente.")
         return
-    await activar_modo_noche(context, GENERAL_CHAT_ID)
-    await send_long_message(context.bot, GENERAL_CHAT_ID, "Modo noche activado manualmente hasta las 08:00.", thread_id=GENERAL_THREAD_ID)
+    try:
+        await activar_modo_noche(context, GENERAL_CHAT_ID)
+        await send_long_message(context.bot, GENERAL_CHAT_ID, "Modo noche activado manualmente hasta las 08:00.", thread_id=GENERAL_THREAD_ID)
+        if update.effective_chat.id != GENERAL_CHAT_ID:
+            await update.message.reply_text("Modo noche activado en el grupo D.N.A. TV.")
+    except Exception as e:
+        await update.message.reply_text(f"Error al activar modo noche: {e}")
 
 # --- MODO NOCHE AUTOMÁTICO (CORREGIDO) ---
 async def activar_modo_noche(context: ContextTypes.DEFAULT_TYPE, chat_id):
@@ -480,12 +494,13 @@ async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
         thread_id=GENERAL_THREAD_ID
     )
 
-# --- FILTRO DE MENSAJES MODO NOCHE ---
+# --- FILTRO DE MENSAJES MODO NOCHE SOLO EN GENERAL ---
 async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if hasattr(update.message, "message_thread_id"):
-        if update.message.message_thread_id != GENERAL_THREAD_ID:
-            return
+    # Solo filtra en el tema General
+    if hasattr(update.message, "message_thread_id") and update.message.message_thread_id != GENERAL_THREAD_ID:
+        return
     hora = datetime.datetime.now(TZ).hour
+    # Solo restringe de 23:00 a 08:00
     if 23 <= hora or hora < 8:
         user_id = update.effective_user.id
         chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
@@ -499,9 +514,8 @@ async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # --- RESPUESTA GENERAL EN GRUPO (tema General, cualquier mensaje excepto admins) ---
 async def respuesta_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if hasattr(update.message, "message_thread_id"):
-        if update.message.message_thread_id != GENERAL_THREAD_ID:
-            return
+    if hasattr(update.message, "message_thread_id") and update.message.message_thread_id != GENERAL_THREAD_ID:
+        return
     user_id = update.effective_user.id
     chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
     admin_ids = [admin.user.id for admin in chat_admins]
