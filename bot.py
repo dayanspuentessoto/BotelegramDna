@@ -139,58 +139,87 @@ async def send_long_message(bot, chat_id, text, parse_mode=None, thread_id=None)
             params["message_thread_id"] = thread_id
         await bot.send_message(**params)
 
-# --- SCRAPER MGS ---
+# --- SCRAPER MGS MEJORADO ---
 async def scrape_mgs_content():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         await page.goto(URL_MGS, timeout=120000)
+        # Scroll lento hasta el fondo (puede necesitar más iteraciones según el contenido)
+        prev_height = 0
+        for _ in range(50):  # aumenta a 50 para asegurar carga completa
+            await page.evaluate("window.scrollBy(0, window.innerHeight);")
+            await page.wait_for_timeout(700)
+            curr_height = await page.evaluate("document.body.scrollHeight")
+            if curr_height == prev_height:
+                break
+            prev_height = curr_height
         html = await page.content()
         await browser.close()
         soup = BeautifulSoup(html, "html.parser")
 
+        # Obtener fecha (busca <span> grande/naranja o h1/h2 con "Actualización")
         fecha_actualizacion = None
-        peliculas, series, anime, cartoon = [], [], [], []
+        for tag in soup.find_all(["h1","h2","span"]):
+            txt = tag.get_text(strip=True)
+            if txt.lower().startswith("actualización de contenido"):
+                fecha_actualizacion = txt
+                break
+            if "hasta el" in txt.lower() and "actualización" in txt.lower():
+                fecha_actualizacion = txt
+                break
 
-        # Buscar fecha de actualización
-        fecha_tag = soup.find("h6", string=lambda x: x and "Actualización de contenido" in x)
-        if fecha_tag:
-            fecha_actualizacion = fecha_tag.get_text(strip=True)
+        # Buscar secciones por <span> rojo y nombre
+        categorias = {}
+        for span in soup.find_all("span"):
+            style = span.get("style", "")
+            texto = span.get_text(strip=True)
+            if "color: red" in style or texto.lower() in ["películas", "series", "anime", "cartoon", "animado"]:
+                items = []
+                # Busca <li> hasta el próximo título
+                curr = span
+                while True:
+                    curr = curr.find_next_sibling()
+                    if not curr or (curr.name in ["span", "h2", "h1"] and curr.get_text(strip=True) != ""): break
+                    if curr.name == "li":
+                        items.append(curr.get_text(strip=True))
+                if items and texto:
+                    categorias[texto.capitalize()] = items
 
-        # Buscar listados
-        secciones = soup.find_all("div", class_="accordion-body")
-        for section in secciones:
-            title_tag = section.find_previous("button")
-            title = title_tag.get_text(strip=True) if title_tag else ""
-            items = [li.get_text(strip=True) for li in section.find_all("li")]
-            if "Películas" in title:
-                peliculas = items
-            elif "Series" in title:
-                series = items
-            elif "Anime" in title:
-                anime = items
-            elif "Cartoon" in title or "Animado" in title:
-                cartoon = items
+        # Si no encontró por color, busca por texto plano
+        for titulo in ["Películas", "Series", "Anime", "Cartoon", "Animado"]:
+            if titulo not in categorias:
+                for tag in soup.find_all(["span", "strong"]):
+                    if tag.get_text(strip=True).lower() == titulo.lower():
+                        items = []
+                        curr = tag
+                        while True:
+                            curr = curr.find_next_sibling()
+                            if not curr or curr.name in ["span", "h2", "h1"]: break
+                            if curr.name == "li":
+                                items.append(curr.get_text(strip=True))
+                        if items:
+                            categorias[titulo] = items
 
         return {
             "fecha": fecha_actualizacion,
-            "peliculas": peliculas,
-            "series": series,
-            "anime": anime,
-            "cartoon": cartoon
+            "categorias": categorias
         }
 
-def formato_mgs_msg(data):
-    msg = f"*{data['fecha']}*\n\n"
-    if data["peliculas"]:
-        msg += "🎬 *Películas:*\n" + "\n".join(f"• {p}" for p in data["peliculas"]) + "\n\n"
-    if data["series"]:
-        msg += "📺 *Series:*\n" + "\n".join(f"• {s}" for s in data["series"]) + "\n\n"
-    if data["anime"]:
-        msg += "🧑‍🎤 *Anime:*\n" + "\n".join(f"• {a}" for a in data["anime"]) + "\n\n"
-    if data["cartoon"]:
-        msg += "🦸 *Cartoon/Animado:*\n" + "\n".join(f"• {c}" for c in data["cartoon"]) + "\n\n"
-    return msg.strip()
+def formato_mgs_msgs(data):
+    msgs = []
+    if data['fecha']:
+        msgs.append(f"*{data['fecha']}*")
+    for nombre, items in data.get("categorias", {}).items():
+        if items:
+            msg = f"🎬 *{nombre}:*\n" if nombre.lower().startswith("película") else \
+                  f"📺 *{nombre}:*\n" if nombre.lower().startswith("serie") else \
+                  f"🧑‍🎤 *{nombre}:*\n" if nombre.lower().startswith("anime") else \
+                  f"🦸 *{nombre}:*\n" if nombre.lower().startswith("cartoon") or nombre.lower().startswith("animado") else \
+                  f"*{nombre}:*\n"
+            msg += "\n".join(f"• {item}" for item in items)
+            msgs.append(msg)
+    return msgs
 
 async def obtener_ultima_fecha_mgs():
     try:
@@ -210,13 +239,15 @@ async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
             return
         ultima_fecha = await obtener_ultima_fecha_mgs()
         if data["fecha"] != ultima_fecha:
-            await send_long_message(
-                context.bot,
-                MGS_GROUP_ID,
-                formato_mgs_msg(data),
-                parse_mode="Markdown",
-                thread_id=MGS_THREAD_ID
-            )
+            msgs = formato_mgs_msgs(data)
+            for msg in msgs:
+                await send_long_message(
+                    context.bot,
+                    MGS_GROUP_ID,
+                    msg,
+                    parse_mode="Markdown",
+                    thread_id=MGS_THREAD_ID
+                )
             await guardar_ultima_fecha_mgs(data["fecha"])
     except Exception as e:
         logging.error(f"Error en actualización MGS: {e}")
@@ -224,11 +255,13 @@ async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
 async def pelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         data = await scrape_mgs_content()
-        msg = formato_mgs_msg(data)
+        msgs = formato_mgs_msgs(data)
         if update.effective_chat.type == "private":
-            await send_long_message(context.bot, update.effective_chat.id, msg, parse_mode="Markdown")
+            for msg in msgs:
+                await send_long_message(context.bot, update.effective_chat.id, msg, parse_mode="Markdown")
         else:
-            await send_long_message(context.bot, MGS_GROUP_ID, msg, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
+            for msg in msgs:
+                await send_long_message(context.bot, MGS_GROUP_ID, msg, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
             thread_actual = getattr(getattr(update, "message", None), "message_thread_id", None)
             if thread_actual != MGS_THREAD_ID:
                 await send_long_message(context.bot, MGS_GROUP_ID, "El listado fue enviado al tema Actualización de contenido APP MGS.", thread_id=MGS_THREAD_ID)
@@ -390,7 +423,6 @@ async def desactivar_modo_noche(context: ContextTypes.DEFAULT_TYPE):
     await context.bot.set_chat_permissions(GENERAL_CHAT_ID, permissions=permisos)
     await send_long_message(context.bot, GENERAL_CHAT_ID, "☀️ ¡Fin del modo noche! Ya pueden enviar mensajes.", thread_id=GENERAL_THREAD_ID)
 
-# --- SALUDO SEGÚN HORA ---
 def obtener_saludo():
     hora = datetime.datetime.now(TZ).hour
     if 6 <= hora < 12:
