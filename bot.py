@@ -135,10 +135,16 @@ async def send_long_message(bot, chat_id, text, parse_mode=None, thread_id=None)
         params = {"chat_id": chat_id, "text": text[i:i+4000]}
         if parse_mode:
             params["parse_mode"] = parse_mode
-        # Solo usa thread_id si está definido y válido
         if thread_id and str(chat_id).startswith("-100") and thread_id > 0:
-            params["message_thread_id"] = thread_id
-        await bot.send_message(**params)
+            try:
+                params["message_thread_id"] = thread_id
+                await bot.send_message(**params)
+            except Exception as e:
+                logging.error(f"Error enviando mensaje en thread {thread_id}: {e}")
+                params.pop("message_thread_id", None)
+                await bot.send_message(**params)
+        else:
+            await bot.send_message(**params)
 
 # --- SCRAPER MGS MEJORADO ---
 async def scrape_mgs_content():
@@ -147,7 +153,7 @@ async def scrape_mgs_content():
         page = await browser.new_page()
         await page.goto(URL_MGS, timeout=120000)
         prev_height = 0
-        for _ in range(60):  # asegura carga completa
+        for _ in range(60):
             await page.evaluate("window.scrollBy(0, window.innerHeight);")
             await page.wait_for_timeout(700)
             curr_height = await page.evaluate("document.body.scrollHeight")
@@ -156,6 +162,12 @@ async def scrape_mgs_content():
             prev_height = curr_height
         html = await page.content()
         await browser.close()
+        # Guardar HTML para depuración
+        try:
+            with open("debug_mgs.html", "w", encoding="utf-8") as f:
+                f.write(html)
+        except Exception as e:
+            logging.error(f"No se pudo guardar debug_mgs.html: {e}")
         soup = BeautifulSoup(html, "html.parser")
 
         # Obtener fecha
@@ -199,6 +211,10 @@ async def scrape_mgs_content():
                         if items:
                             categorias[titulo] = items
 
+        # Log para depuración
+        if not categorias:
+            logging.error("No se encontraron categorías en el scraping de MGS.")
+
         return {
             "fecha": fecha_actualizacion,
             "categorias": categorias
@@ -217,6 +233,8 @@ def formato_mgs_msgs(data):
                   f"*{nombre}:*\n"
             msg += "\n".join(f"• {item}" for item in items)
             msgs.append(msg)
+    if not msgs:
+        logging.error("formato_mgs_msgs retornó []")
     return msgs
 
 async def obtener_ultima_fecha_mgs():
@@ -262,7 +280,6 @@ async def pelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msgs = formato_mgs_msgs(data)
         if not msgs:
             await send_long_message(context.bot, update.effective_chat.id, "No hay contenido disponible.", parse_mode="Markdown")
-            logging.error("formato_mgs_msgs retornó []")
             return
         if update.effective_chat.type == "private":
             for msg in msgs:
@@ -410,7 +427,7 @@ async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Error al activar modo noche: {e}")
 
-# --- MODO NOCHE AUTOMÁTICO (CORREGIDO) ---
+# --- MODO NOCHE AUTOMÁTICO ---
 async def activar_modo_noche(context: ContextTypes.DEFAULT_TYPE, chat_id):
     permisos = ChatPermissions(
         can_send_messages=False,
@@ -496,11 +513,9 @@ async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- FILTRO DE MENSAJES MODO NOCHE SOLO EN GENERAL ---
 async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Solo filtra en el tema General
     if hasattr(update.message, "message_thread_id") and update.message.message_thread_id != GENERAL_THREAD_ID:
         return
     hora = datetime.datetime.now(TZ).hour
-    # Solo restringe de 23:00 a 08:00
     if 23 <= hora or hora < 8:
         user_id = update.effective_user.id
         chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
