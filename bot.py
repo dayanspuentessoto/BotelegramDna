@@ -5,9 +5,12 @@ import datetime
 import pytz
 import os
 import aiofiles
+import hashlib
+import json
 from telegram import Update, ChatPermissions
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters, ChatMemberHandler
 
+# --------- CONFIGURACIÓN ---------
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GENERAL_CHAT_ID = -1002421748184
 GENERAL_THREAD_ID = 1
@@ -16,13 +19,32 @@ CARTELERA_URL = "https://www.futbolenvivochile.com/"
 MGS_THREAD_ID = 1437
 MGS_GROUP_ID = GENERAL_CHAT_ID
 URL_MGS = "https://magistv.lynkbe.com/new/"
-LAST_MGS_DATE_FILE = "last_mgs_date.txt"
+LAST_MGS_STATE_FILE = "last_mgs_state.json"
 TZ = pytz.timezone("America/Santiago")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
+# --------- FUNCIONES DE ESTADO/UTILIDAD PARA MGS ---------
+async def hash_mgs_categorias(categorias):
+    contenido = json.dumps(categorias, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(contenido.encode("utf-8")).hexdigest()
+
+async def obtener_ultimo_estado_mgs():
+    try:
+        async with aiofiles.open(LAST_MGS_STATE_FILE, mode="r") as f:
+            data = json.loads(await f.read())
+            return data.get("fecha", ""), data.get("hash", "")
+    except Exception:
+        return "", ""
+
+async def guardar_estado_mgs(fecha, hash_):
+    data = {"fecha": fecha, "hash": hash_}
+    async with aiofiles.open(LAST_MGS_STATE_FILE, mode="w") as f:
+        await f.write(json.dumps(data))
+
+# --------- SCRAPING Y PARSING ---------
 def dias_a_mostrar():
     hoy = datetime.datetime.now(TZ).date()
     manana = hoy + datetime.timedelta(days=1)
@@ -140,7 +162,6 @@ async def send_long_message(bot, chat_id, text, parse_mode=None, thread_id=None)
                 await bot.send_message(**params)
             except Exception as e:
                 logging.error(f"Error enviando mensaje en thread {thread_id}: {e}")
-                # Si el error es "Message thread not found", envía sin thread
                 if "Message thread not found" in str(e):
                     params.pop("message_thread_id", None)
                     await bot.send_message(**params)
@@ -223,45 +244,29 @@ def formato_mgs_msgs(data):
         logging.error("formato_mgs_msgs retornó []")
     return msgs
 
-async def obtener_ultima_fecha_mgs():
-    try:
-        async with aiofiles.open(LAST_MGS_DATE_FILE, mode="r") as f:
-            return (await f.read()).strip()
-    except Exception:
-        return ""
-
-async def guardar_ultima_fecha_mgs(fecha):
-    async with aiofiles.open(LAST_MGS_DATE_FILE, mode="w") as f:
-        await f.write(fecha)
-
+# --------- FUNCIONES DE COMANDO ---------
 async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
     try:
         data = await scrape_mgs_content()
         if not data or not data["fecha"]:
             logging.error("No se encontró fecha de actualización MGS.")
             return
-        ultima_fecha = await obtener_ultima_fecha_mgs()
-        if data["fecha"] != ultima_fecha:
-            msgs = formato_mgs_msgs(data)
-            fecha_txt = data.get('fecha', '')
-            if fecha_txt:
-                fecha_txt = f"*{fecha_txt}*"
-                await send_long_message(
-                    context.bot,
-                    MGS_GROUP_ID,
-                    fecha_txt,
-                    parse_mode="Markdown",
-                    thread_id=MGS_THREAD_ID
-                )
-            for msg in msgs:
-                await send_long_message(
-                    context.bot,
-                    MGS_GROUP_ID,
-                    msg,
-                    parse_mode="Markdown",
-                    thread_id=MGS_THREAD_ID
-                )
-            await guardar_ultima_fecha_mgs(data["fecha"])
+
+        fecha_actual = data.get("fecha", "")
+        categorias_actual = data.get("categorias", {})
+        hash_actual = await hash_mgs_categorias(categorias_actual)
+        ultima_fecha, ultimo_hash = await obtener_ultimo_estado_mgs()
+
+        if fecha_actual == ultima_fecha and hash_actual == ultimo_hash:
+            logging.info("No hay cambios automáticos en MGS.")
+            return
+
+        msgs = formato_mgs_msgs(data)
+        fecha_txt = f"*{fecha_actual}*"
+        await send_long_message(context.bot, MGS_GROUP_ID, fecha_txt, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
+        for msg in msgs:
+            await send_long_message(context.bot, MGS_GROUP_ID, msg, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
+        await guardar_estado_mgs(fecha_actual, hash_actual)
     except Exception as e:
         logging.error(f"Error en actualización MGS: {e}")
 
@@ -272,20 +277,35 @@ async def pelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_long_message(context.bot, update.effective_chat.id, "No se pudo obtener datos de la web.", parse_mode="Markdown")
             logging.error("scrape_mgs_content retornó None")
             return
+
+        fecha_actual = data.get("fecha", "")
+        categorias_actual = data.get("categorias", {})
+        hash_actual = await hash_mgs_categorias(categorias_actual)
+        ultima_fecha, ultimo_hash = await obtener_ultimo_estado_mgs()
+
+        if not fecha_actual:
+            await send_long_message(context.bot, update.effective_chat.id, "No se pudo determinar la fecha de actualización.", parse_mode="Markdown")
+            return
+
+        if fecha_actual == ultima_fecha and hash_actual == ultimo_hash:
+            await send_long_message(context.bot, update.effective_chat.id, "No hay cambios en el contenido desde la última actualización.", parse_mode="Markdown")
+            return
+
         msgs = formato_mgs_msgs(data)
         if not msgs:
             await send_long_message(context.bot, update.effective_chat.id, "No hay contenido disponible.", parse_mode="Markdown")
             return
-        fecha_txt = data.get('fecha', '')
-        if fecha_txt:
-            fecha_txt = f"*{fecha_txt}*"
-            await send_long_message(context.bot, update.effective_chat.id, fecha_txt, parse_mode="Markdown")
+
+        fecha_txt = f"*{fecha_actual}*"
+        await send_long_message(context.bot, update.effective_chat.id, fecha_txt, parse_mode="Markdown")
         for msg in msgs:
             await send_long_message(context.bot, update.effective_chat.id, msg, parse_mode="Markdown")
+        await guardar_estado_mgs(fecha_actual, hash_actual)
     except Exception as e:
         await send_long_message(context.bot, update.effective_chat.id, f"Error: {e}", parse_mode="Markdown")
         logging.error(f"Error en /pelis: {e}")
 
+# --------- FUNCIONES AUXILIARES Y DE GRUPO ---------
 async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if update.effective_chat.type == "private":
@@ -536,6 +556,7 @@ async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await send_long_message(context.bot, GENERAL_CHAT_ID, texto, thread_id=GENERAL_THREAD_ID)
 
+# --------- MAIN ---------
 def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("cartelera", cartelera))
