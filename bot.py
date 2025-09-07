@@ -563,8 +563,8 @@ ultima_agenda_disney = []
 
 async def get_programacion_espn_playwright(url: str) -> list:
     """
-    Scrapea la programación de ESPN usando Playwright y separa por días.
-    Devuelve una lista de tuplas (titulo_dia, agenda_dia).
+    Scrapea la programación de ESPN usando Playwright, separa por días/fechas y retorna una lista 
+    donde cada elemento es un string con la info de un día, listo para enviar como mensajes separados.
     """
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -572,38 +572,54 @@ async def get_programacion_espn_playwright(url: str) -> list:
         await page.goto(url, timeout=60000)
         await page.wait_for_timeout(2500)
         content = await page.content()
+        texto_body = await page.inner_text("body")
         await browser.close()
     soup = BeautifulSoup(content, "html.parser")
-    paragraphs = soup.find_all("p")
 
-    agenda_por_dias = []
-    agenda_dia = ""
-    titulo_dia = ""
-    regex_dia = re.compile(
-        r"^(Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)\s*\d*", re.IGNORECASE
-    )
+    # Buscar nodos lineales para robustez (h2, strong, b, div, span, p, li)
+    nodes = soup.find_all(['h2', 'strong', 'b', 'div', 'span', 'p', 'li'])
+    regex_dia = re.compile(r"^(Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)\s*\d*", re.IGNORECASE)
 
-    for p in paragraphs:
-        text = p.get_text(strip=True)
-        if not text:
+    mensajes_por_dia = []
+    current_day = ""
+    current_events = []
+    for tag in nodes:
+        text = tag.get_text(strip=True)
+        if not text or len(text) < 4:
             continue
         if regex_dia.match(text):
-            if agenda_dia and titulo_dia:
-                agenda_por_dias.append((titulo_dia, agenda_dia.strip()))
-            titulo_dia = text
-            agenda_dia = ""
+            if current_day and current_events:
+                mensajes_por_dia.append(f"*{current_day}*\n" + "\n".join(current_events))
+            current_day = text
+            current_events = []
         else:
             if re.match(r"^\d{1,2}:\d{2}", text) or "Plan Premium Disney+" in text or "ESPN" in text:
-                agenda_dia += f"{text}\n"
-    if titulo_dia and agenda_dia:
-        agenda_por_dias.append((titulo_dia, agenda_dia.strip()))
+                current_events.append(text)
+    if current_day and current_events:
+        mensajes_por_dia.append(f"*{current_day}*\n" + "\n".join(current_events))
 
-    return agenda_por_dias
+    # Fallback si no encuentra nada
+    if not mensajes_por_dia:
+        posible_lines = texto_body.splitlines()
+        for line in posible_lines:
+            text = line.strip()
+            if regex_dia.match(text):
+                if current_day and current_events:
+                    mensajes_por_dia.append(f"*{current_day}*\n" + "\n".join(current_events))
+                current_day = text
+                current_events = []
+            else:
+                if re.match(r"^\d{1,2}:\d{2}", text) or "Plan Premium Disney+" in text or "ESPN" in text:
+                    current_events.append(text)
+        if current_day and current_events:
+            mensajes_por_dia.append(f"*{current_day}*\n" + "\n".join(current_events))
+
+    return mensajes_por_dia
 
 async def disney(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Comando: /disney <url>
-    Procesa la URL, extrae la agenda, separa por días y responde al privado.
+    Procesa la URL, extrae la agenda separada por días, y responde con cada día en un mensaje separado.
     """
     global ultima_agenda_disney
 
@@ -617,11 +633,10 @@ async def disney(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     url = context.args[0]
     try:
-        agenda_por_dias = await get_programacion_espn_playwright(url)
-        if agenda_por_dias:
-            ultima_agenda_disney = agenda_por_dias
-            for (titulo, agenda) in agenda_por_dias:
-                msg = f"*{titulo}*\n\n{agenda}"
+        mensajes_por_dia = await get_programacion_espn_playwright(url)
+        if mensajes_por_dia:
+            ultima_agenda_disney = mensajes_por_dia
+            for msg in mensajes_por_dia:
                 for i in range(0, len(msg), 3900):
                     await update.message.reply_text(msg[i:i+3900], parse_mode="Markdown")
         else:
@@ -632,7 +647,7 @@ async def disney(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def enviardisney(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Comando: /enviardisney
-    Envía al grupo la última agenda procesada al hilo Eventos Disney+ en La APP de pago, separada por día.
+    Envía al grupo la última agenda procesada al hilo Eventos Disney+ en La APP de pago, en mensajes separados por día.
     """
     global ultima_agenda_disney
 
@@ -647,8 +662,7 @@ async def enviardisney(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = GENERAL_CHAT_ID  # -1002421748184
     thread_id = DISNEY_THREAD_ID  # 1469
 
-    for (titulo, agenda) in ultima_agenda_disney:
-        msg = f"*{titulo}*\n\n{agenda}"
+    for msg in ultima_agenda_disney:
         for i in range(0, len(msg), 3900):
             await context.bot.send_message(
                 chat_id=chat_id,
