@@ -559,28 +559,51 @@ async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_long_message(context.bot, GENERAL_CHAT_ID, texto, thread_id=GENERAL_THREAD_ID)
 
 # --------- DISNEY/ESPN - AGENDA TV ---------
-ultima_agenda_disney = ""
+ultima_agenda_disney = []
 
-def get_programacion_espn(url: str) -> str:
+async def get_programacion_espn_playwright(url: str) -> list:
     """
-    Descarga una URL y extrae la programación (horarios + días) desde el HTML de ESPN.
+    Scrapea la programación de ESPN usando Playwright y separa por días.
+    Devuelve una lista de tuplas (titulo_dia, agenda_dia).
     """
-    response = requests.get(url, timeout=10)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto(url, timeout=60000)
+        await page.wait_for_timeout(2500)
+        content = await page.content()
+        await browser.close()
+    soup = BeautifulSoup(content, "html.parser")
     paragraphs = soup.find_all("p")
-    agenda = []
+
+    agenda_por_dias = []
+    agenda_dia = ""
+    titulo_dia = ""
+    regex_dia = re.compile(
+        r"^(Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)\s*\d*", re.IGNORECASE
+    )
+
     for p in paragraphs:
         text = p.get_text(strip=True)
-        if re.match(r"^(Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)", text, re.IGNORECASE) \
-           or re.match(r"^\d{1,2}:\d{2}", text):
-            agenda.append(text)
-    return "\n".join(agenda)
+        if not text:
+            continue
+        if regex_dia.match(text):
+            if agenda_dia and titulo_dia:
+                agenda_por_dias.append((titulo_dia, agenda_dia.strip()))
+            titulo_dia = text
+            agenda_dia = ""
+        else:
+            if re.match(r"^\d{1,2}:\d{2}", text) or "Plan Premium Disney+" in text or "ESPN" in text:
+                agenda_dia += f"{text}\n"
+    if titulo_dia and agenda_dia:
+        agenda_por_dias.append((titulo_dia, agenda_dia.strip()))
+
+    return agenda_por_dias
 
 async def disney(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Comando: /disney <url>
-    Procesa la URL, extrae la agenda y responde al privado.
+    Procesa la URL, extrae la agenda, separa por días y responde al privado.
     """
     global ultima_agenda_disney
 
@@ -594,11 +617,13 @@ async def disney(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     url = context.args[0]
     try:
-        programacion = get_programacion_espn(url)
-        if programacion:
-            ultima_agenda_disney = programacion
-            for i in range(0, len(programacion), 3900):
-                await update.message.reply_text(programacion[i:i+3900])
+        agenda_por_dias = await get_programacion_espn_playwright(url)
+        if agenda_por_dias:
+            ultima_agenda_disney = agenda_por_dias
+            for (titulo, agenda) in agenda_por_dias:
+                msg = f"*{titulo}*\n\n{agenda}"
+                for i in range(0, len(msg), 3900):
+                    await update.message.reply_text(msg[i:i+3900], parse_mode="Markdown")
         else:
             await update.message.reply_text("⚠️ No encontré programación en la página.")
     except Exception as e:
@@ -607,7 +632,7 @@ async def disney(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def enviardisney(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Comando: /enviardisney
-    Envía al grupo la última agenda procesada al hilo Eventos Disney+ en La APP de pago.
+    Envía al grupo la última agenda procesada al hilo Eventos Disney+ en La APP de pago, separada por día.
     """
     global ultima_agenda_disney
 
@@ -622,12 +647,15 @@ async def enviardisney(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = GENERAL_CHAT_ID  # -1002421748184
     thread_id = DISNEY_THREAD_ID  # 1469
 
-    for i in range(0, len(ultima_agenda_disney), 3900):
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=ultima_agenda_disney[i:i+3900],
-            message_thread_id=thread_id
-        )
+    for (titulo, agenda) in ultima_agenda_disney:
+        msg = f"*{titulo}*\n\n{agenda}"
+        for i in range(0, len(msg), 3900):
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=msg[i:i+3900],
+                parse_mode="Markdown",
+                message_thread_id=thread_id
+            )
     await update.message.reply_text("✅ Agenda enviada al grupo.")
 
 # --------- MAIN ---------
