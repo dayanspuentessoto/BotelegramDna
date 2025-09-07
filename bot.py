@@ -7,6 +7,8 @@ import os
 import aiofiles
 import hashlib
 import json
+import re
+import requests
 from telegram import Update, ChatPermissions
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters, ChatMemberHandler
 
@@ -21,6 +23,7 @@ MGS_GROUP_ID = GENERAL_CHAT_ID
 URL_MGS = "https://magistv.lynkbe.com/new/"
 LAST_MGS_STATE_FILE = "last_mgs_state.json"
 TZ = pytz.timezone("America/Santiago")
+DISNEY_THREAD_ID = 1469  # Eventos Disney+ en La APP de pago
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -51,7 +54,6 @@ def dias_a_mostrar():
     return hoy, manana
 
 def fecha_en_partido(fecha_str):
-    import re
     fecha_str = (fecha_str or "").lower()
     hoy = datetime.datetime.now(TZ).date()
     manana = hoy + datetime.timedelta(days=1)
@@ -556,6 +558,78 @@ async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await send_long_message(context.bot, GENERAL_CHAT_ID, texto, thread_id=GENERAL_THREAD_ID)
 
+# --------- DISNEY/ESPN - AGENDA TV ---------
+ultima_agenda_disney = ""
+
+def get_programacion_espn(url: str) -> str:
+    """
+    Descarga una URL y extrae la programación (horarios + días) desde el HTML de ESPN.
+    """
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+    paragraphs = soup.find_all("p")
+    agenda = []
+    for p in paragraphs:
+        text = p.get_text(strip=True)
+        if re.match(r"^(Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)", text, re.IGNORECASE) \
+           or re.match(r"^\d{1,2}:\d{2}", text):
+            agenda.append(text)
+    return "\n".join(agenda)
+
+async def disney(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Comando: /disney <url>
+    Procesa la URL, extrae la agenda y responde al privado.
+    """
+    global ultima_agenda_disney
+
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("Por favor, usa este comando en privado.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("⚠️ Usa el comando así:\n/disney <URL_de_ESPN>")
+        return
+
+    url = context.args[0]
+    try:
+        programacion = get_programacion_espn(url)
+        if programacion:
+            ultima_agenda_disney = programacion
+            for i in range(0, len(programacion), 3900):
+                await update.message.reply_text(programacion[i:i+3900])
+        else:
+            await update.message.reply_text("⚠️ No encontré programación en la página.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error al procesar la página: {e}")
+
+async def enviardisney(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Comando: /enviardisney
+    Envía al grupo la última agenda procesada al hilo Eventos Disney+ en La APP de pago.
+    """
+    global ultima_agenda_disney
+
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("Por favor, usa este comando en privado.")
+        return
+
+    if not ultima_agenda_disney:
+        await update.message.reply_text("⚠️ Aún no has cargado ninguna agenda con /disney.")
+        return
+
+    chat_id = GENERAL_CHAT_ID  # -1002421748184
+    thread_id = DISNEY_THREAD_ID  # 1469
+
+    for i in range(0, len(ultima_agenda_disney), 3900):
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=ultima_agenda_disney[i:i+3900],
+            message_thread_id=thread_id
+        )
+    await update.message.reply_text("✅ Agenda enviada al grupo.")
+
 # --------- MAIN ---------
 def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -566,6 +640,8 @@ def main():
     application.add_handler(CommandHandler("noche", modo_noche_manual))
     application.add_handler(CommandHandler("ayuda", ayuda))
     application.add_handler(CommandHandler("pelis", pelis))
+    application.add_handler(CommandHandler("disney", disney))
+    application.add_handler(CommandHandler("enviardisney", enviardisney))
     application.job_queue.run_daily(
         lambda context: activar_modo_noche(context, GENERAL_CHAT_ID),
         time=datetime.time(hour=23, minute=0, tzinfo=TZ),
