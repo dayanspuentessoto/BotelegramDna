@@ -140,8 +140,10 @@ async def send_long_message(bot, chat_id, text, parse_mode=None, thread_id=None)
                 await bot.send_message(**params)
             except Exception as e:
                 logging.error(f"Error enviando mensaje en thread {thread_id}: {e}")
-                params.pop("message_thread_id", None)
-                await bot.send_message(**params)
+                # Si el error es "Message thread not found", envía sin thread
+                if "Message thread not found" in str(e):
+                    params.pop("message_thread_id", None)
+                    await bot.send_message(**params)
         else:
             await bot.send_message(**params)
 
