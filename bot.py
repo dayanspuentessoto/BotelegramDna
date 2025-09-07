@@ -8,8 +8,10 @@ import aiofiles
 import hashlib
 import json
 import re
+import asyncio  # Necesario para sleep
 from telegram import Update, ChatPermissions
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters, ChatMemberHandler
+from telegram.error import RetryAfter, TelegramError
 
 # --------- CONFIGURACIÓN ---------
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -153,22 +155,36 @@ def formato_mensaje_partidos(agrupados, fecha):
     return mensaje
 
 async def send_long_message(bot, chat_id, text, parse_mode=None, thread_id=None):
+    """
+    Envía mensajes largos de forma segura, cortando en 4000 caracteres y esperando 1 segundo entre mensajes.
+    Maneja errores de flood y otros, para asegurar que se envíen todos los fragmentos posibles.
+    """
     for i in range(0, len(text), 4000):
         params = {"chat_id": chat_id, "text": text[i:i+4000]}
         if parse_mode:
             params["parse_mode"] = parse_mode
         if thread_id and str(chat_id).startswith("-100") and thread_id > 0:
+            params["message_thread_id"] = thread_id
+        enviado = False
+        while not enviado:
             try:
-                params["message_thread_id"] = thread_id
                 await bot.send_message(**params)
-            except Exception as e:
-                logging.error(f"Error enviando mensaje en thread {thread_id}: {e}")
-                if "Message thread not found" in str(e):
+                enviado = True
+                await asyncio.sleep(1)  # 1 segundo entre mensajes
+            except RetryAfter as e:
+                logging.warning(f"Flood control: esperando {e.retry_after} segundos")
+                await asyncio.sleep(e.retry_after)
+            except TelegramError as e:
+                logging.error(f"Telegram error: {e}")
+                if "Message thread not found" in str(e) and "message_thread_id" in params:
                     params.pop("message_thread_id", None)
-                    await bot.send_message(**params)
-        else:
-            await bot.send_message(**params)
+                    continue
+                break
+            except Exception as e:
+                logging.error(f"Error inesperado enviando mensaje: {e}")
+                break
 
+# --------- MGS ---------
 async def scrape_mgs_content():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -331,7 +347,21 @@ async def disney(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ultima_agenda_disney = mensajes_por_dia
             for msg in mensajes_por_dia:
                 for i in range(0, len(msg), 3900):
-                    await update.message.reply_text(msg[i:i+3900], parse_mode="Markdown")
+                    enviado = False
+                    while not enviado:
+                        try:
+                            await update.message.reply_text(msg[i:i+3900], parse_mode="Markdown")
+                            enviado = True
+                            await asyncio.sleep(1)
+                        except RetryAfter as e:
+                            logging.warning(f"Flood control: esperando {e.retry_after} segundos")
+                            await asyncio.sleep(e.retry_after)
+                        except TelegramError as e:
+                            logging.error(f"Telegram error: {e}")
+                            break
+                        except Exception as e:
+                            logging.error(f"Error inesperado enviando mensaje: {e}")
+                            break
         else:
             await update.message.reply_text("⚠️ No encontré programación en la página.")
     except Exception as e:
@@ -347,15 +377,43 @@ async def enviardisney(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     chat_id = GENERAL_CHAT_ID
     thread_id = DISNEY_THREAD_ID
+    total_msgs = 0
+    error_ocurrido = False
     for msg in ultima_agenda_disney:
         for i in range(0, len(msg), 3900):
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=msg[i:i+3900],
-                parse_mode="Markdown",
-                message_thread_id=thread_id
-            )
-    await update.message.reply_text("✅ Agenda enviada al grupo.")
+            params = {
+                "chat_id": chat_id,
+                "text": msg[i:i+3900],
+                "parse_mode": "Markdown",
+                "message_thread_id": thread_id
+            }
+            enviado = False
+            while not enviado:
+                try:
+                    await context.bot.send_message(**params)
+                    enviado = True
+                    total_msgs += 1
+                    await asyncio.sleep(1)
+                except RetryAfter as e:
+                    logging.warning(f"Flood control: esperando {e.retry_after} segundos")
+                    await asyncio.sleep(e.retry_after)
+                except TelegramError as e:
+                    logging.error(f"Telegram error: {e}")
+                    error_ocurrido = True
+                    if "Message thread not found" in str(e) and "message_thread_id" in params:
+                        params.pop("message_thread_id", None)
+                        continue
+                    break
+                except Exception as e:
+                    logging.error(f"Error inesperado enviando mensaje: {e}")
+                    error_ocurrido = True
+                    break
+    if not error_ocurrido and total_msgs > 0:
+        await update.message.reply_text(f"✅ Agenda enviada al grupo correctamente ({total_msgs} mensajes).")
+    elif error_ocurrido and total_msgs > 0:
+        await update.message.reply_text(f"⚠️ Agenda enviada parcialmente ({total_msgs} mensajes). Verifica los logs para más detalles.")
+    else:
+        await update.message.reply_text("❌ No se pudo enviar la agenda.")
 
 # --------- FUNCIONES AUXILIARES Y DE GRUPO (bienvenida, despedida, modo noche, ayuda, respuesta_general, etc) ---------
 async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
