@@ -8,7 +8,6 @@ import aiofiles
 import hashlib
 import json
 import re
-import requests
 from telegram import Update, ChatPermissions
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters, ChatMemberHandler
 
@@ -23,7 +22,7 @@ MGS_GROUP_ID = GENERAL_CHAT_ID
 URL_MGS = "https://magistv.lynkbe.com/new/"
 LAST_MGS_STATE_FILE = "last_mgs_state.json"
 TZ = pytz.timezone("America/Santiago")
-DISNEY_THREAD_ID = 1469  # Eventos Disney+ en La APP de pago
+DISNEY_THREAD_ID = 1469
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -246,221 +245,119 @@ def formato_mgs_msgs(data):
         logging.error("formato_mgs_msgs retornó []")
     return msgs
 
-# --------- FUNCIONES DE COMANDO ---------
-async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
-    try:
-        data = await scrape_mgs_content()
-        if not data or not data["fecha"]:
-            logging.error("No se encontró fecha de actualización MGS.")
-            return
+# --------- DISNEY/ESPN - AGENDA TV ---------
+ultima_agenda_disney = []
 
-        fecha_actual = data.get("fecha", "")
-        categorias_actual = data.get("categorias", {})
-        hash_actual = await hash_mgs_categorias(categorias_actual)
-        ultima_fecha, ultimo_hash = await obtener_ultimo_estado_mgs()
+ESPN_FOOTER_FILTER = [
+    "Terms of Use", "Privacy Policy", "Your US State Privacy Rights",
+    "Children's Online Privacy Policy", "Interest-Based Ads",
+    "About Nielsen Measurement", "Do Not Sell or Share My Personal Information",
+    "Contact Us", "Disney Ad Sales Site", "Work for ESPN", "Corrections",
+    "ESPN BET Sportsbook", "PENN Entertainment", "Must be 21+ to wager",
+    "1-800-GAMBLER", "Copyright:",
+    "ESPN Enterprises, Inc. All rights reserved"
+]
 
-        if fecha_actual == ultima_fecha and hash_actual == ultimo_hash:
-            logging.info("No hay cambios automáticos en MGS.")
-            return
+def es_footer_espn(linea: str) -> bool:
+    for palabra in ESPN_FOOTER_FILTER:
+        if palabra.lower() in linea.lower():
+            return True
+    return False
 
-        msgs = formato_mgs_msgs(data)
-        fecha_txt = f"*{fecha_actual}*"
-        await send_long_message(context.bot, MGS_GROUP_ID, fecha_txt, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
-        for msg in msgs:
-            await send_long_message(context.bot, MGS_GROUP_ID, msg, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
-        await guardar_estado_mgs(fecha_actual, hash_actual)
-    except Exception as e:
-        logging.error(f"Error en actualización MGS: {e}")
-
-async def pelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        data = await scrape_mgs_content()
-        if not data:
-            await send_long_message(context.bot, update.effective_chat.id, "No se pudo obtener datos de la web.", parse_mode="Markdown")
-            logging.error("scrape_mgs_content retornó None")
-            return
-
-        fecha_actual = data.get("fecha", "")
-        categorias_actual = data.get("categorias", {})
-        hash_actual = await hash_mgs_categorias(categorias_actual)
-        ultima_fecha, ultimo_hash = await obtener_ultimo_estado_mgs()
-
-        if not fecha_actual:
-            await send_long_message(context.bot, update.effective_chat.id, "No se pudo determinar la fecha de actualización.", parse_mode="Markdown")
-            return
-
-        if fecha_actual == ultima_fecha and hash_actual == ultimo_hash:
-            await send_long_message(context.bot, update.effective_chat.id, "No hay cambios en el contenido desde la última actualización.", parse_mode="Markdown")
-            return
-
-        msgs = formato_mgs_msgs(data)
-        if not msgs:
-            await send_long_message(context.bot, update.effective_chat.id, "No hay contenido disponible.", parse_mode="Markdown")
-            return
-
-        fecha_txt = f"*{fecha_actual}*"
-        await send_long_message(context.bot, update.effective_chat.id, fecha_txt, parse_mode="Markdown")
-        for msg in msgs:
-            await send_long_message(context.bot, update.effective_chat.id, msg, parse_mode="Markdown")
-        await guardar_estado_mgs(fecha_actual, hash_actual)
-    except Exception as e:
-        await send_long_message(context.bot, update.effective_chat.id, f"Error: {e}", parse_mode="Markdown")
-        logging.error(f"Error en /pelis: {e}")
-
-# --------- FUNCIONES AUXILIARES Y DE GRUPO ---------
-async def cartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        if update.effective_chat.type == "private":
-            destino = update.effective_chat.id
-            thread_id = None
+async def get_programacion_espn_playwright(url: str) -> list:
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto(url, timeout=60000)
+        await page.wait_for_timeout(2500)
+        content = await page.content()
+        texto_body = await page.inner_text("body")
+        await browser.close()
+    soup = BeautifulSoup(content, "html.parser")
+    nodes = soup.find_all(['h2', 'strong', 'b', 'div', 'span', 'p', 'li'])
+    regex_dia = re.compile(r"^(Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)\s*\d*", re.IGNORECASE)
+    mensajes_por_dia = []
+    current_day = ""
+    current_events = []
+    for tag in nodes:
+        text = tag.get_text(strip=True)
+        if not text or len(text) < 4:
+            continue
+        if es_footer_espn(text):
+            continue
+        if regex_dia.match(text):
+            if current_day and current_events:
+                mensajes_por_dia.append(f"*{current_day}*\n" + "\n".join(current_events))
+            current_day = text
+            current_events = []
         else:
-            destino = GENERAL_CHAT_ID
-            thread_id = EVENTOS_DEPORTIVOS_THREAD_ID
-        hoy, manana = dias_a_mostrar()
-        partidos = await scrape_cartelera_table()
-        partidos_hoy = filtra_partidos_por_fecha(partidos, hoy)
-        partidos_manana = filtra_partidos_por_fecha(partidos, manana)
-        if partidos_hoy:
-            agrupados_hoy = agrupa_partidos_por_campeonato(partidos_hoy)
-            mensaje_hoy = formato_mensaje_partidos(agrupados_hoy, hoy)
-            await send_long_message(context.bot, destino, mensaje_hoy, parse_mode="Markdown", thread_id=thread_id)
-        else:
-            await send_long_message(context.bot, destino, "No hay partidos para hoy.", thread_id=thread_id)
-        if partidos_manana:
-            agrupados_manana = agrupa_partidos_por_campeonato(partidos_manana)
-            mensaje_manana = formato_mensaje_partidos(agrupados_manana, manana)
-            await send_long_message(context.bot, destino, mensaje_manana, parse_mode="Markdown", thread_id=thread_id)
-        else:
-            await send_long_message(context.bot, destino, "No hay partidos para mañana.", thread_id=thread_id)
-        if update.effective_chat.type != "private":
-            thread_actual = None
-            if update.message and hasattr(update.message, "message_thread_id"):
-                thread_actual = update.message.message_thread_id
-            if thread_actual != EVENTOS_DEPORTIVOS_THREAD_ID:
-                await send_long_message(context.bot, GENERAL_CHAT_ID, "La cartelera fue enviada al tema EVENTOS DEPORTIVOS.", thread_id=GENERAL_THREAD_ID)
-    except Exception as e:
-        await send_long_message(context.bot, GENERAL_CHAT_ID, f"Error: {str(e)}", thread_id=EVENTOS_DEPORTIVOS_THREAD_ID)
-        logging.error(f"Error en /cartelera: {e}")
+            if re.match(r"^\d{1,2}:\d{2}", text) or "Plan Premium Disney+" in text or "ESPN" in text:
+                if not es_footer_espn(text):
+                    current_events.append(text)
+    if current_day and current_events:
+        mensajes_por_dia.append(f"*{current_day}*\n" + "\n".join(current_events))
+    # Fallback si no encuentra nada
+    if not mensajes_por_dia:
+        posible_lines = texto_body.splitlines()
+        for line in posible_lines:
+            text = line.strip()
+            if not text or es_footer_espn(text):
+                continue
+            if regex_dia.match(text):
+                if current_day and current_events:
+                    mensajes_por_dia.append(f"*{current_day}*\n" + "\n".join(current_events))
+                current_day = text
+                current_events = []
+            else:
+                if re.match(r"^\d{1,2}:\d{2}", text) or "Plan Premium Disney+" in text or "ESPN" in text:
+                    if not es_footer_espn(text):
+                        current_events.append(text)
+        if current_day and current_events:
+            mensajes_por_dia.append(f"*{current_day}*\n" + "\n".join(current_events))
+    return mensajes_por_dia
 
-async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
-    try:
-        hoy, manana = dias_a_mostrar()
-        partidos = await scrape_cartelera_table()
-        partidos_hoy = filtra_partidos_por_fecha(partidos, hoy)
-        partidos_manana = filtra_partidos_por_fecha(partidos, manana)
-        thread_id = EVENTOS_DEPORTIVOS_THREAD_ID
-        chat_id = GENERAL_CHAT_ID
-        if partidos_hoy:
-            agrupados_hoy = agrupa_partidos_por_campeonato(partidos_hoy)
-            mensaje_hoy = formato_mensaje_partidos(agrupados_hoy, hoy)
-            await send_long_message(context.bot, chat_id, mensaje_hoy, parse_mode="Markdown", thread_id=thread_id)
-        else:
-            await send_long_message(context.bot, chat_id, "No hay partidos para hoy.", thread_id=thread_id)
-        if partidos_manana:
-            agrupados_manana = agrupa_partidos_por_campeonato(partidos_manana)
-            mensaje_manana = formato_mensaje_partidos(agrupados_manana, manana)
-            await send_long_message(context.bot, chat_id, mensaje_manana, parse_mode="Markdown", thread_id=thread_id)
-        else:
-            await send_long_message(context.bot, chat_id, "No hay partidos para mañana.", thread_id=thread_id)
-    except Exception as e:
-        await send_long_message(context.bot, GENERAL_CHAT_ID, f"Error al obtener cartelera: {str(e)}", thread_id=EVENTOS_DEPORTIVOS_THREAD_ID)
-        logging.error(f"Error en envío diario: {e}")
-
-async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-            await page.goto(CARTELERA_URL, timeout=120000)
-            for _ in range(10):
-                await page.evaluate("window.scrollBy(0, window.innerHeight);")
-                await page.wait_for_timeout(800)
-            html = await page.inner_html("body")
-            await browser.close()
-            await send_long_message(context.bot, update.effective_chat.id, html[:4000])
-    except Exception as e:
-        await update.message.reply_text(f"Error al obtener HTML: {e}")
-
-async def enviar_texto_body(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-            await page.goto(CARTELERA_URL, timeout=120000)
-            for _ in range(10):
-                await page.evaluate("window.scrollBy(0, window.innerHeight);")
-                await page.wait_for_timeout(800)
-            texto = await page.inner_text("body")
-            await browser.close()
-            await send_long_message(context.bot, update.effective_chat.id, texto[:4000])
-    except Exception as e:
-        await update.message.reply_text(f"Error al obtener texto: {e}")
-
-async def hora_chile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ahora = datetime.datetime.now(TZ)
-    if update.effective_chat.type == "private":
-        await update.message.reply_text(
-            f"La hora en Chile es: {ahora.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"(Zona horaria detectada: {TZ.zone})"
-        )
-    else:
-        await send_long_message(
-            context.bot,
-            GENERAL_CHAT_ID,
-            f"La hora en Chile es: {ahora.strftime('%Y-%m-%d %H:%M:%S')}\n(Zona horaria detectada: {TZ.zone})",
-            thread_id=GENERAL_THREAD_ID
-        )
-
-async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
-    admin_ids = [admin.user.id for admin in chat_admins]
-    if user_id not in admin_ids:
-        await update.message.reply_text("Solo el administrador puede activar el modo noche manualmente.")
+async def disney(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global ultima_agenda_disney
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("Por favor, usa este comando en privado.")
         return
+    if not context.args:
+        await update.message.reply_text("⚠️ Usa el comando así:\n/disney <URL_de_ESPN>")
+        return
+    url = context.args[0]
     try:
-        await activar_modo_noche(context, GENERAL_CHAT_ID)
-        await send_long_message(context.bot, GENERAL_CHAT_ID, "Modo noche activado manualmente hasta las 08:00.", thread_id=GENERAL_THREAD_ID)
-        if update.effective_chat.id != GENERAL_CHAT_ID:
-            await update.message.reply_text("Modo noche activado en el grupo D.N.A. TV.")
+        mensajes_por_dia = await get_programacion_espn_playwright(url)
+        if mensajes_por_dia:
+            ultima_agenda_disney = mensajes_por_dia
+            for msg in mensajes_por_dia:
+                for i in range(0, len(msg), 3900):
+                    await update.message.reply_text(msg[i:i+3900], parse_mode="Markdown")
+        else:
+            await update.message.reply_text("⚠️ No encontré programación en la página.")
     except Exception as e:
-        await update.message.reply_text(f"Error al activar modo noche: {e}")
+        await update.message.reply_text(f"❌ Error al procesar la página: {e}")
 
-async def activar_modo_noche(context: ContextTypes.DEFAULT_TYPE, chat_id):
-    permisos = ChatPermissions(
-        can_send_messages=False,
-        can_send_polls=False,
-        can_send_other_messages=False,
-        can_add_web_page_previews=False,
-        can_change_info=False,
-        can_invite_users=True,
-        can_pin_messages=False,
-    )
-    await context.bot.set_chat_permissions(chat_id, permissions=permisos)
-    await send_long_message(context.bot, chat_id, "🌙 Modo noche activado. El canal queda restringido hasta las 08:00.", thread_id=GENERAL_THREAD_ID)
+async def enviardisney(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global ultima_agenda_disney
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("Por favor, usa este comando en privado.")
+        return
+    if not ultima_agenda_disney:
+        await update.message.reply_text("⚠️ Aún no has cargado ninguna agenda con /disney.")
+        return
+    chat_id = GENERAL_CHAT_ID
+    thread_id = DISNEY_THREAD_ID
+    for msg in ultima_agenda_disney:
+        for i in range(0, len(msg), 3900):
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=msg[i:i+3900],
+                parse_mode="Markdown",
+                message_thread_id=thread_id
+            )
+    await update.message.reply_text("✅ Agenda enviada al grupo.")
 
-async def desactivar_modo_noche(context: ContextTypes.DEFAULT_TYPE):
-    permisos = ChatPermissions(
-        can_send_messages=True,
-        can_send_polls=True,
-        can_send_other_messages=True,
-        can_add_web_page_previews=True,
-        can_change_info=False,
-        can_invite_users=True,
-        can_pin_messages=False,
-    )
-    await context.bot.set_chat_permissions(GENERAL_CHAT_ID, permissions=permisos)
-    await send_long_message(context.bot, GENERAL_CHAT_ID, "☀️ ¡Fin del modo noche! Ya pueden enviar mensajes.", thread_id=GENERAL_THREAD_ID)
-
-def obtener_saludo():
-    hora = datetime.datetime.now(TZ).hour
-    if 6 <= hora < 12:
-        return "¡Buenos días!"
-    elif 12 <= hora < 19:
-        return "¡Buenas tardes!"
-    else:
-        return "¡Buenas noches!"
-
+# --------- FUNCIONES AUXILIARES Y DE GRUPO (bienvenida, despedida, modo noche, ayuda, respuesta_general, etc) ---------
 async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_member = getattr(update, "chat_member", None)
     if chat_member and getattr(chat_member, "new_chat_members", None):
@@ -507,20 +404,14 @@ async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
         thread_id=GENERAL_THREAD_ID
     )
 
-async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if hasattr(update.message, "message_thread_id") and update.message.message_thread_id != GENERAL_THREAD_ID:
-        return
+def obtener_saludo():
     hora = datetime.datetime.now(TZ).hour
-    if 23 <= hora or hora < 8:
-        user_id = update.effective_user.id
-        chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
-        admin_ids = [admin.user.id for admin in chat_admins]
-        if user_id in admin_ids:
-            return
-        try:
-            await update.message.delete()
-        except Exception as e:
-            logging.warning(f"No se pudo borrar el mensaje de usuario {user_id} por modo noche: {e}")
+    if 6 <= hora < 12:
+        return "¡Buenos días!"
+    elif 12 <= hora < 19:
+        return "¡Buenas tardes!"
+    else:
+        return "¡Buenas noches!"
 
 async def respuesta_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if hasattr(update.message, "message_thread_id") and update.message.message_thread_id != GENERAL_THREAD_ID:
@@ -558,124 +449,194 @@ async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await send_long_message(context.bot, GENERAL_CHAT_ID, texto, thread_id=GENERAL_THREAD_ID)
 
-# --------- DISNEY/ESPN - AGENDA TV ---------
-ultima_agenda_disney = []
-
-async def get_programacion_espn_playwright(url: str) -> list:
-    """
-    Scrapea la programación de ESPN usando Playwright, separa por días/fechas y retorna una lista 
-    donde cada elemento es un string con la info de un día, listo para enviar como mensajes separados.
-    """
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        await page.goto(url, timeout=60000)
-        await page.wait_for_timeout(2500)
-        content = await page.content()
-        texto_body = await page.inner_text("body")
-        await browser.close()
-    soup = BeautifulSoup(content, "html.parser")
-
-    # Buscar nodos lineales para robustez (h2, strong, b, div, span, p, li)
-    nodes = soup.find_all(['h2', 'strong', 'b', 'div', 'span', 'p', 'li'])
-    regex_dia = re.compile(r"^(Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)\s*\d*", re.IGNORECASE)
-
-    mensajes_por_dia = []
-    current_day = ""
-    current_events = []
-    for tag in nodes:
-        text = tag.get_text(strip=True)
-        if not text or len(text) < 4:
-            continue
-        if regex_dia.match(text):
-            if current_day and current_events:
-                mensajes_por_dia.append(f"*{current_day}*\n" + "\n".join(current_events))
-            current_day = text
-            current_events = []
-        else:
-            if re.match(r"^\d{1,2}:\d{2}", text) or "Plan Premium Disney+" in text or "ESPN" in text:
-                current_events.append(text)
-    if current_day and current_events:
-        mensajes_por_dia.append(f"*{current_day}*\n" + "\n".join(current_events))
-
-    # Fallback si no encuentra nada
-    if not mensajes_por_dia:
-        posible_lines = texto_body.splitlines()
-        for line in posible_lines:
-            text = line.strip()
-            if regex_dia.match(text):
-                if current_day and current_events:
-                    mensajes_por_dia.append(f"*{current_day}*\n" + "\n".join(current_events))
-                current_day = text
-                current_events = []
-            else:
-                if re.match(r"^\d{1,2}:\d{2}", text) or "Plan Premium Disney+" in text or "ESPN" in text:
-                    current_events.append(text)
-        if current_day and current_events:
-            mensajes_por_dia.append(f"*{current_day}*\n" + "\n".join(current_events))
-
-    return mensajes_por_dia
-
-async def disney(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Comando: /disney <url>
-    Procesa la URL, extrae la agenda separada por días, y responde con cada día en un mensaje separado.
-    """
-    global ultima_agenda_disney
-
-    if update.effective_chat.type != "private":
-        await update.message.reply_text("Por favor, usa este comando en privado.")
+async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if hasattr(update.message, "message_thread_id") and update.message.message_thread_id != GENERAL_THREAD_ID:
         return
+    hora = datetime.datetime.now(TZ).hour
+    if 23 <= hora or hora < 8:
+        user_id = update.effective_user.id
+        chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
+        admin_ids = [admin.user.id for admin in chat_admins]
+        if user_id in admin_ids:
+            return
+        try:
+            await update.message.delete()
+        except Exception as e:
+            logging.warning(f"No se pudo borrar el mensaje de usuario {user_id} por modo noche: {e}")
 
-    if not context.args:
-        await update.message.reply_text("⚠️ Usa el comando así:\n/disney <URL_de_ESPN>")
+async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
+    admin_ids = [admin.user.id for admin in chat_admins]
+    if user_id not in admin_ids:
+        await update.message.reply_text("Solo el administrador puede activar el modo noche manualmente.")
         return
-
-    url = context.args[0]
     try:
-        mensajes_por_dia = await get_programacion_espn_playwright(url)
-        if mensajes_por_dia:
-            ultima_agenda_disney = mensajes_por_dia
-            for msg in mensajes_por_dia:
-                for i in range(0, len(msg), 3900):
-                    await update.message.reply_text(msg[i:i+3900], parse_mode="Markdown")
-        else:
-            await update.message.reply_text("⚠️ No encontré programación en la página.")
+        await activar_modo_noche(context, GENERAL_CHAT_ID)
+        await send_long_message(context.bot, GENERAL_CHAT_ID, "Modo noche activado manualmente hasta las 08:00.", thread_id=GENERAL_THREAD_ID)
+        if update.effective_chat.id != GENERAL_CHAT_ID:
+            await update.message.reply_text("Modo noche activado en el grupo D.N.A. TV.")
     except Exception as e:
-        await update.message.reply_text(f"❌ Error al procesar la página: {e}")
+        await update.message.reply_text(f"Error al activar modo noche: {e}")
 
-async def enviardisney(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Comando: /enviardisney
-    Envía al grupo la última agenda procesada al hilo Eventos Disney+ en La APP de pago, en mensajes separados por día.
-    """
-    global ultima_agenda_disney
+async def activar_modo_noche(context: ContextTypes.DEFAULT_TYPE, chat_id):
+    permisos = ChatPermissions(
+        can_send_messages=False,
+        can_send_polls=False,
+        can_send_other_messages=False,
+        can_add_web_page_previews=False,
+        can_change_info=False,
+        can_invite_users=True,
+        can_pin_messages=False,
+    )
+    await context.bot.set_chat_permissions(chat_id, permissions=permisos)
+    await send_long_message(context.bot, chat_id, "🌙 Modo noche activado. El canal queda restringido hasta las 08:00.", thread_id=GENERAL_THREAD_ID)
 
-    if update.effective_chat.type != "private":
-        await update.message.reply_text("Por favor, usa este comando en privado.")
-        return
+async def desactivar_modo_noche(context: ContextTypes.DEFAULT_TYPE):
+    permisos = ChatPermissions(
+        can_send_messages=True,
+        can_send_polls=True,
+        can_send_other_messages=True,
+        can_add_web_page_previews=True,
+        can_change_info=False,
+        can_invite_users=True,
+        can_pin_messages=False,
+    )
+    await context.bot.set_chat_permissions(GENERAL_CHAT_ID, permissions=permisos)
+    await send_long_message(context.bot, GENERAL_CHAT_ID, "☀️ ¡Fin del modo noche! Ya pueden enviar mensajes.", thread_id=GENERAL_THREAD_ID)
 
-    if not ultima_agenda_disney:
-        await update.message.reply_text("⚠️ Aún no has cargado ninguna agenda con /disney.")
-        return
+async def hora_chile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ahora = datetime.datetime.now(TZ)
+    if update.effective_chat.type == "private":
+        await update.message.reply_text(
+            f"La hora en Chile es: {ahora.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"(Zona horaria detectada: {TZ.zone})"
+        )
+    else:
+        await send_long_message(
+            context.bot,
+            GENERAL_CHAT_ID,
+            f"La hora en Chile es: {ahora.strftime('%Y-%m-%d %H:%M:%S')}\n(Zona horaria detectada: {TZ.zone})",
+            thread_id=GENERAL_THREAD_ID
+        )
 
-    chat_id = GENERAL_CHAT_ID  # -1002421748184
-    thread_id = DISNEY_THREAD_ID  # 1469
+async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.goto(CARTELERA_URL, timeout=120000)
+            for _ in range(10):
+                await page.evaluate("window.scrollBy(0, window.innerHeight);")
+                await page.wait_for_timeout(800)
+            html = await page.inner_html("body")
+            await browser.close()
+            await send_long_message(context.bot, update.effective_chat.id, html[:4000])
+    except Exception as e:
+        await update.message.reply_text(f"Error al obtener HTML: {e}")
 
-    for msg in ultima_agenda_disney:
-        for i in range(0, len(msg), 3900):
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=msg[i:i+3900],
-                parse_mode="Markdown",
-                message_thread_id=thread_id
-            )
-    await update.message.reply_text("✅ Agenda enviada al grupo.")
+async def enviar_texto_body(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.goto(CARTELERA_URL, timeout=120000)
+            for _ in range(10):
+                await page.evaluate("window.scrollBy(0, window.innerHeight);")
+                await page.wait_for_timeout(800)
+            texto = await page.inner_text("body")
+            await browser.close()
+            await send_long_message(context.bot, update.effective_chat.id, texto[:4000])
+    except Exception as e:
+        await update.message.reply_text(f"Error al obtener texto: {e}")
 
-# --------- MAIN ---------
+async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        hoy, manana = dias_a_mostrar()
+        partidos = await scrape_cartelera_table()
+        partidos_hoy = filtra_partidos_por_fecha(partidos, hoy)
+        partidos_manana = filtra_partidos_por_fecha(partidos, manana)
+        thread_id = EVENTOS_DEPORTIVOS_THREAD_ID
+        chat_id = GENERAL_CHAT_ID
+        if partidos_hoy:
+            agrupados_hoy = agrupa_partidos_por_campeonato(partidos_hoy)
+            mensaje_hoy = formato_mensaje_partidos(agrupados_hoy, hoy)
+            await send_long_message(context.bot, chat_id, mensaje_hoy, parse_mode="Markdown", thread_id=thread_id)
+        else:
+            await send_long_message(context.bot, chat_id, "No hay partidos para hoy.", thread_id=thread_id)
+        if partidos_manana:
+            agrupados_manana = agrupa_partidos_por_campeonato(partidos_manana)
+            mensaje_manana = formato_mensaje_partidos(agrupados_manana, manana)
+            await send_long_message(context.bot, chat_id, mensaje_manana, parse_mode="Markdown", thread_id=thread_id)
+        else:
+            await send_long_message(context.bot, chat_id, "No hay partidos para mañana.", thread_id=thread_id)
+    except Exception as e:
+        await send_long_message(context.bot, GENERAL_CHAT_ID, f"Error al obtener cartelera: {str(e)}", thread_id=EVENTOS_DEPORTIVOS_THREAD_ID)
+        logging.error(f"Error en envío diario: {e}")
+
+async def pelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        data = await scrape_mgs_content()
+        if not data:
+            await send_long_message(context.bot, update.effective_chat.id, "No se pudo obtener datos de la web.", parse_mode="Markdown")
+            logging.error("scrape_mgs_content retornó None")
+            return
+
+        fecha_actual = data.get("fecha", "")
+        categorias_actual = data.get("categorias", {})
+        hash_actual = await hash_mgs_categorias(categorias_actual)
+        ultima_fecha, ultimo_hash = await obtener_ultimo_estado_mgs()
+
+        if not fecha_actual:
+            await send_long_message(context.bot, update.effective_chat.id, "No se pudo determinar la fecha de actualización.", parse_mode="Markdown")
+            return
+
+        if fecha_actual == ultima_fecha and hash_actual == ultimo_hash:
+            await send_long_message(context.bot, update.effective_chat.id, "No hay cambios en el contenido desde la última actualización.", parse_mode="Markdown")
+            return
+
+        msgs = formato_mgs_msgs(data)
+        if not msgs:
+            await send_long_message(context.bot, update.effective_chat.id, "No hay contenido disponible.", parse_mode="Markdown")
+            return
+
+        fecha_txt = f"*{fecha_actual}*"
+        await send_long_message(context.bot, update.effective_chat.id, fecha_txt, parse_mode="Markdown")
+        for msg in msgs:
+            await send_long_message(context.bot, update.effective_chat.id, msg, parse_mode="Markdown")
+        await guardar_estado_mgs(fecha_actual, hash_actual)
+    except Exception as e:
+        await send_long_message(context.bot, update.effective_chat.id, f"Error: {e}", parse_mode="Markdown")
+        logging.error(f"Error en /pelis: {e}")
+
+async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        data = await scrape_mgs_content()
+        if not data or not data["fecha"]:
+            logging.error("No se encontró fecha de actualización MGS.")
+            return
+
+        fecha_actual = data.get("fecha", "")
+        categorias_actual = data.get("categorias", {})
+        hash_actual = await hash_mgs_categorias(categorias_actual)
+        ultima_fecha, ultimo_hash = await obtener_ultimo_estado_mgs()
+
+        if fecha_actual == ultima_fecha and hash_actual == ultimo_hash:
+            logging.info("No hay cambios automáticos en MGS.")
+            return
+
+        msgs = formato_mgs_msgs(data)
+        fecha_txt = f"*{fecha_actual}*"
+        await send_long_message(context.bot, MGS_GROUP_ID, fecha_txt, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
+        for msg in msgs:
+            await send_long_message(context.bot, MGS_GROUP_ID, msg, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
+        await guardar_estado_mgs(fecha_actual, hash_actual)
+    except Exception as e:
+        logging.error(f"Error en actualización MGS: {e}")
+
 def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(CommandHandler("cartelera", cartelera))
+    application.add_handler(CommandHandler("cartelera", enviar_eventos_diarios))
     application.add_handler(CommandHandler("htmlcartelera", enviar_html))
     application.add_handler(CommandHandler("textocartelera", enviar_texto_body))
     application.add_handler(CommandHandler("hora", hora_chile))
