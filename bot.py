@@ -560,8 +560,6 @@ async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def respuesta_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if hasattr(update.message, "message_thread_id") and update.message.message_thread_id != GENERAL_THREAD_ID:
-        return
     user_id = update.effective_user.id
     chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
     admin_ids = [admin.user.id for admin in chat_admins]
@@ -572,7 +570,7 @@ async def respuesta_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.bot,
         GENERAL_CHAT_ID,
         f"{saludo} 👋 Si necesitas ayuda, escribe el comando /ayuda para recibir información clara sobre cómo contactar al administrador y resolver tus dudas.",
-        thread_id=GENERAL_THREAD_ID
+        thread_id=GENERAL_THREAD_ID  # puedes dejarlo así para responder siempre en el thread, o quitarlo para responder en el chat general
     )
 
 async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
