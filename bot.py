@@ -1,6 +1,7 @@
 import logging
 import re
 import os
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "0"
 import json
 import datetime
 import pytz
