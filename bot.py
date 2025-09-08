@@ -1,16 +1,22 @@
 import logging
-from playwright.async_api import async_playwright
-from bs4 import BeautifulSoup
+import re
+import os
+import json
 import datetime
 import pytz
-import os
 import aiofiles
 import hashlib
-import json
-import re
 import asyncio
+from collections import defaultdict, OrderedDict
+
+from playwright.async_api import async_playwright
+from bs4 import BeautifulSoup
+
 from telegram import Update, ChatPermissions
-from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters, ChatMemberHandler
+from telegram.ext import (
+    Application, ContextTypes, CommandHandler, MessageHandler,
+    filters, ChatMemberHandler
+)
 from telegram.error import RetryAfter, TelegramError
 
 # --------- CONFIGURACIÓN ---------
@@ -26,16 +32,15 @@ LAST_MGS_STATE_FILE = "last_mgs_state.json"
 TZ = pytz.timezone("America/Santiago")
 DISNEY_THREAD_ID = 1469
 
-# --------- RATE LIMIT Y ADMIN ---------
-AYUDA_RATE_LIMIT_SECONDS = 240  # 4 minutos
-ayuda_last_sent = {}  # user_id: timestamp
-ADMIN_ID = 5032964793  # Tu ID para avisos privados
+AYUDA_RATE_LIMIT_SECONDS = 240
+ayuda_last_sent = {}
+ADMIN_ID = 5032964793
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
-# --------- FUNCIONES DE ESTADO/UTILIDAD PARA MGS ---------
+# --------- UTILIDADES Y ESTADO ---------
 async def hash_mgs_categorias(categorias):
     contenido = json.dumps(categorias, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(contenido.encode("utf-8")).hexdigest()
@@ -53,7 +58,7 @@ async def guardar_estado_mgs(fecha, hash_):
     async with aiofiles.open(LAST_MGS_STATE_FILE, mode="w") as f:
         await f.write(json.dumps(data))
 
-# --------- FUNCIONES DE SCRAPING Y PARSING CARTELERA ---------
+# --------- CARTELERA DEPORTIVA ---------
 def dias_a_mostrar():
     hoy = datetime.datetime.now(TZ).date()
     manana = hoy + datetime.timedelta(days=1)
@@ -159,7 +164,7 @@ def formato_mensaje_partidos(agrupados, fecha):
             )
     return mensaje
 
-# --------- FUNCIONES DE SCRAPING Y PARSING MGS ---------
+# --------- MGS (MAGISTV) SCRAPING Y FORMATO ---------
 async def scrape_mgs_content():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -263,7 +268,7 @@ async def send_long_message(bot, chat_id, text, parse_mode=None, thread_id=None)
                 logging.error(f"Error inesperado enviando mensaje: {e}")
                 break
 
-# --------- FUNCIONES DISNEY/ESPN ---------
+# --------- DISNEY/ESPN AGENDA Y FORMATO DEPORTIVO ---------
 ultima_agenda_disney = []
 
 ESPN_FOOTER_FILTER = [
@@ -283,7 +288,6 @@ def es_footer_espn(linea: str) -> bool:
     return False
 
 def extraer_ultima_fecha_agenda(mensajes_por_dia):
-    # Busca líneas tipo 'Viernes 12', 'Domingo 14', etc.
     fecha_re = re.compile(r"(Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)\s+(\d{1,2})", re.IGNORECASE)
     dias = []
     for msg in mensajes_por_dia:
@@ -325,7 +329,7 @@ async def get_programacion_espn_playwright(url: str) -> list:
             continue
         if regex_dia.match(text):
             if current_day and current_events:
-                mensajes_por_dia.append(f"*{current_day}*\n" + "\n".join(current_events))
+                mensajes_por_dia.append(f"{current_day}\n" + "\n".join(current_events))
             current_day = text
             current_events = []
         else:
@@ -333,8 +337,7 @@ async def get_programacion_espn_playwright(url: str) -> list:
                 if not es_footer_espn(text):
                     current_events.append(text)
     if current_day and current_events:
-        mensajes_por_dia.append(f"*{current_day}*\n" + "\n".join(current_events))
-    # Fallback si no encuentra nada
+        mensajes_por_dia.append(f"{current_day}\n" + "\n".join(current_events))
     if not mensajes_por_dia:
         posible_lines = texto_body.splitlines()
         for line in posible_lines:
@@ -343,7 +346,7 @@ async def get_programacion_espn_playwright(url: str) -> list:
                 continue
             if regex_dia.match(text):
                 if current_day and current_events:
-                    mensajes_por_dia.append(f"*{current_day}*\n" + "\n".join(current_events))
+                    mensajes_por_dia.append(f"{current_day}\n" + "\n".join(current_events))
                 current_day = text
                 current_events = []
             else:
@@ -351,9 +354,68 @@ async def get_programacion_espn_playwright(url: str) -> list:
                     if not es_footer_espn(text):
                         current_events.append(text)
         if current_day and current_events:
-            mensajes_por_dia.append(f"*{current_day}*\n" + "\n".join(current_events))
+            mensajes_por_dia.append(f"{current_day}\n" + "\n".join(current_events))
     return mensajes_por_dia
 
+def parsear_cartelera_disney(texto):
+    cartelera = OrderedDict()
+    dia_actual = None
+    for linea in texto.strip().split('\n'):
+        linea = linea.strip()
+        m_dia = re.match(r"^(Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)\s+\d+", linea)
+        if m_dia:
+            dia_actual = linea
+            if dia_actual not in cartelera:
+                cartelera[dia_actual] = defaultdict(list)
+            continue
+        if not dia_actual or not linea:
+            continue
+        linea = re.sub(r"^Plan Premium Disney\+ ?/ ?", "", linea)
+        m = re.match(
+            r"^(?P<hora>\d{1,2}:\d{2}) ?(?:([A-Za-z0-9+ ]+) ?/ ?)?(?P<resto>.+)", linea
+        )
+        if not m:
+            continue
+        hora = m.group("hora")
+        resto = m.group("resto")
+        partes = [p.strip() for p in resto.split('–')]
+        if len(partes) >= 3:
+            categoria = partes[0]
+            competencia = partes[1]
+            descripcion = ' – '.join(partes[2:])
+            grupo = competencia
+        elif len(partes) == 2:
+            grupo = partes[0]
+            descripcion = partes[1]
+        else:
+            grupo = "Otros"
+            descripcion = resto
+        canal_match = re.search(r"/ ?([A-Za-z0-9+ ]+)$", linea)
+        canal = canal_match.group(1).strip() if canal_match else ""
+        cartelera[dia_actual][grupo].append((hora, descripcion, canal))
+    mensajes = []
+    for dia, grupos in cartelera.items():
+        fecha_txt = formatear_fecha_dia(dia)
+        mensajes.append(f"⚽ *Cartelera de Partidos Televisados - {fecha_txt}*")
+        for grupo, eventos in grupos.items():
+            mensajes.append(f"\n🏆 *{grupo}*")
+            for hora, descripcion, canal in eventos:
+                canal_txt = f" | {canal}" if canal else ""
+                mensajes.append(f"• {hora} | {descripcion}{canal_txt}")
+        mensajes.append("")
+    return '\n'.join(mensajes).strip()
+
+def formatear_fecha_dia(dia):
+    dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+    m = re.match(r"^(%s)\s+(\d+)" % "|".join(dias_semana), dia)
+    if m:
+        nombre_dia, numero_dia = m.groups()
+        mes = 9
+        anio = 2025
+        return f"{int(numero_dia):02d}-{mes:02d}-{anio}"
+    return dia
+
+# --------- COMANDO /DISNEY CON FORMATO CARTELERA DEPORTIVA MULTI-DÍA ---------
 async def disney(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ultima_agenda_disney
     if update.effective_chat.type != "private":
@@ -366,24 +428,26 @@ async def disney(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         mensajes_por_dia = await get_programacion_espn_playwright(url)
         if mensajes_por_dia:
-            ultima_agenda_disney = mensajes_por_dia
-            for msg in mensajes_por_dia:
-                for i in range(0, len(msg), 3900):
-                    enviado = False
-                    while not enviado:
-                        try:
-                            await update.message.reply_text(msg[i:i+3900], parse_mode="Markdown")
-                            enviado = True
-                            await asyncio.sleep(1)
-                        except RetryAfter as e:
-                            logging.warning(f"Flood control: esperando {e.retry_after} segundos")
-                            await asyncio.sleep(e.retry_after)
-                        except TelegramError as e:
-                            logging.error(f"Telegram error: {e}")
-                            break
-                        except Exception as e:
-                            logging.error(f"Error inesperado enviando mensaje: {e}")
-                            break
+            texto_agenda = "\n".join(mensajes_por_dia)
+            cartelera_formateada = parsear_cartelera_disney(texto_agenda)
+            ultima_agenda_disney = [cartelera_formateada]
+            # Enviar mensaje largo formateado (con Markdown)
+            for i in range(0, len(cartelera_formateada), 3900):
+                enviado = False
+                while not enviado:
+                    try:
+                        await update.message.reply_text(cartelera_formateada[i:i+3900], parse_mode="Markdown")
+                        enviado = True
+                        await asyncio.sleep(1)
+                    except RetryAfter as e:
+                        logging.warning(f"Flood control: esperando {e.retry_after} segundos")
+                        await asyncio.sleep(e.retry_after)
+                    except TelegramError as e:
+                        logging.error(f"Telegram error: {e}")
+                        break
+                    except Exception as e:
+                        logging.error(f"Error inesperado enviando mensaje: {e}")
+                        break
 
             # --- AGENDAR RECORDATORIO ---
             dia_max = extraer_ultima_fecha_agenda(mensajes_por_dia)
@@ -391,14 +455,12 @@ async def disney(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 hoy = datetime.datetime.now(TZ)
                 mes = hoy.month
                 anio = hoy.year
-                # Si el día ya pasó este mes, asume que es el mes siguiente
                 if dia_max < hoy.day:
                     mes += 1
                     if mes > 12:
                         mes = 1
                         anio += 1
                 fecha_recordatorio = datetime.datetime(anio, mes, dia_max, 13, 0, tzinfo=TZ)
-                # Si la fecha ya pasó este mes, no agenda
                 if fecha_recordatorio > hoy:
                     context.job_queue.run_once(
                         enviar_recordatorio_disney,
@@ -459,7 +521,7 @@ async def enviardisney(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ No se pudo enviar la agenda.")
 
-# --------- FUNCIONES PELIS Y MGS ---------
+# --------- COMANDO /PELIS Y ENVÍO/MGS AUTOMÁTICO ---------
 async def pelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         data = await scrape_mgs_content()
@@ -754,7 +816,6 @@ async def respuesta_privada(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "También puedes escribir /ayuda para ver información y recursos útiles."
     )
 
-# --------- MAIN Y REGISTRO DE HANDLERS ---------
 def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("cartelera", enviar_eventos_diarios))
