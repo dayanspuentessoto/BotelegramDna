@@ -1,6 +1,6 @@
-python-telegram-bot[job-queue,webhooks]==20.7
-beautifulsoup4>=4.12.2,<5.0
-requests>=2.31.0,<3.0
-playwright>=1.40.0,<2.0
-pytz>=2024.1,<2025.0
 aiofiles>=23.2.1,<24.0
+beautifulsoup4>=4.12.2,<5.0
+playwright>=1.40.0,<2.0
+python-telegram-bot[job-queue,webhooks]==20.7
+pytz>=2024.1,<2025.0
+requests>=2.31.0,<3.0
