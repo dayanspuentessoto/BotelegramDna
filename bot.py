@@ -282,6 +282,26 @@ def es_footer_espn(linea: str) -> bool:
             return True
     return False
 
+def extraer_ultima_fecha_agenda(mensajes_por_dia):
+    # Busca líneas tipo 'Viernes 12', 'Domingo 14', etc.
+    fecha_re = re.compile(r"(Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)\s+(\d{1,2})", re.IGNORECASE)
+    dias = []
+    for msg in mensajes_por_dia:
+        for linea in msg.splitlines():
+            m = fecha_re.match(linea.strip())
+            if m:
+                dias.append(int(m.group(2)))
+    if dias:
+        return max(dias)
+    return None
+
+async def enviar_recordatorio_disney(context: ContextTypes.DEFAULT_TYPE):
+    user_id = context.job.data
+    await context.bot.send_message(
+        chat_id=user_id,
+        text="¡Hola! Hoy es el último día de la agenda Disney/ESPN que cargaste.\n\nEnvíame el link nuevo con el comando /disney <URL> para obtener la agenda actualizada de más días. 😊"
+    )
+
 async def get_programacion_espn_playwright(url: str) -> list:
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -364,6 +384,28 @@ async def disney(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         except Exception as e:
                             logging.error(f"Error inesperado enviando mensaje: {e}")
                             break
+
+            # --- AGENDAR RECORDATORIO ---
+            dia_max = extraer_ultima_fecha_agenda(mensajes_por_dia)
+            if dia_max:
+                hoy = datetime.datetime.now(TZ)
+                mes = hoy.month
+                anio = hoy.year
+                # Si el día ya pasó este mes, asume que es el mes siguiente
+                if dia_max < hoy.day:
+                    mes += 1
+                    if mes > 12:
+                        mes = 1
+                        anio += 1
+                fecha_recordatorio = datetime.datetime(anio, mes, dia_max, 13, 0, tzinfo=TZ)
+                # Si la fecha ya pasó este mes, no agenda
+                if fecha_recordatorio > hoy:
+                    context.job_queue.run_once(
+                        enviar_recordatorio_disney,
+                        when=(fecha_recordatorio - hoy).total_seconds(),
+                        data=update.effective_user.id,
+                        name=f"recordatorio_disney_{fecha_recordatorio.strftime('%Y%m%d')}"
+                    )
         else:
             await update.message.reply_text("⚠️ No encontré programación en la página.")
     except Exception as e:
@@ -570,12 +612,10 @@ async def respuesta_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.bot,
         GENERAL_CHAT_ID,
         f"{saludo} 👋 Si necesitas ayuda, escribe el comando /ayuda para recibir información clara sobre cómo contactar al administrador y resolver tus dudas.",
-        thread_id=GENERAL_THREAD_ID  # puedes dejarlo así para responder siempre en el thread, o quitarlo para responder en el chat general
+        thread_id=GENERAL_THREAD_ID
     )
 
 async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if hasattr(update.message, "message_thread_id") and update.message.message_thread_id != GENERAL_THREAD_ID:
-        return
     hora = datetime.datetime.now(TZ).hour
     if 23 <= hora or hora < 8:
         user_id = update.effective_user.id
