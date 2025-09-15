@@ -37,7 +37,6 @@ ayuda_last_sent = {}
 ADMIN_ID = 5032964793
 
 # --------- CONFIGURACIÓN DE HORARIOS MODO NOCHE/DÍA ---------
-# Variables globales para los horarios (por defecto 23:00 y 08:00)
 MODO_NOCHE_HORA = 23
 MODO_NOCHE_MINUTO = 0
 MODO_DIA_HORA = 8
@@ -638,8 +637,12 @@ async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Error en actualización MGS: {e}")
 
 # --------- ENVÍO EVENTOS DIARIOS ---------
-async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
+async def enviar_eventos_diarios(update: Update = None, context: ContextTypes.DEFAULT_TYPE = None):
     try:
+        # Determinar bot según contexto
+        if context is None:
+            return
+        bot = context.bot
         hoy, manana = dias_a_mostrar()
         partidos = await scrape_cartelera_table()
         partidos_hoy = filtra_partidos_por_fecha(partidos, hoy)
@@ -649,17 +652,20 @@ async def enviar_eventos_diarios(context: ContextTypes.DEFAULT_TYPE):
         if partidos_hoy:
             agrupados_hoy = agrupa_partidos_por_campeonato(partidos_hoy)
             mensaje_hoy = formato_mensaje_partidos(agrupados_hoy, hoy)
-            await send_long_message(context.bot, chat_id, mensaje_hoy, parse_mode="Markdown", thread_id=thread_id)
+            await send_long_message(bot, chat_id, mensaje_hoy, parse_mode="Markdown", thread_id=thread_id)
         else:
-            await send_long_message(context.bot, chat_id, "No hay partidos para hoy.", thread_id=thread_id)
+            await send_long_message(bot, chat_id, "No hay partidos para hoy.", thread_id=thread_id)
         if partidos_manana:
             agrupados_manana = agrupa_partidos_por_campeonato(partidos_manana)
             mensaje_manana = formato_mensaje_partidos(agrupados_manana, manana)
-            await send_long_message(context.bot, chat_id, mensaje_manana, parse_mode="Markdown", thread_id=thread_id)
+            await send_long_message(bot, chat_id, mensaje_manana, parse_mode="Markdown", thread_id=thread_id)
         else:
-            await send_long_message(context.bot, chat_id, "No hay partidos para mañana.", thread_id=thread_id)
+            await send_long_message(bot, chat_id, "No hay partidos para mañana.", thread_id=thread_id)
+        # Si es comando, responde confirmación
+        if update is not None:
+            await update.message.reply_text("✅ Cartelera deportiva enviada al grupo.")
     except Exception as e:
-        await send_long_message(context.bot, GENERAL_CHAT_ID, f"Error al obtener cartelera: {str(e)}", thread_id=EVENTOS_DEPORTIVOS_THREAD_ID)
+        await send_long_message(bot, GENERAL_CHAT_ID, f"Error al obtener cartelera: {str(e)}", thread_id=EVENTOS_DEPORTIVOS_THREAD_ID)
         logging.error(f"Error en envío diario: {e}")
 
 # --------- FUNCIONES DE GRUPO: BIENVENIDA, DESPEDIDA, MODO NOCHE, RESTRICCIONES ---------
@@ -801,36 +807,6 @@ async def hora_chile(update: Update, context: ContextTypes.DEFAULT_TYPE):
             thread_id=GENERAL_THREAD_ID
         )
 
-async def enviar_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-            await page.goto(CARTELERA_URL, timeout=120000)
-            for _ in range(10):
-                await page.evaluate("window.scrollBy(0, window.innerHeight);")
-                await page.wait_for_timeout(800)
-            html = await page.inner_html("body")
-            await browser.close()
-            await send_long_message(context.bot, update.effective_chat.id, html[:4000])
-    except Exception as e:
-        await update.message.reply_text(f"Error al obtener HTML: {e}")
-
-async def enviar_texto_body(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-            await page.goto(CARTELERA_URL, timeout=120000)
-            for _ in range(10):
-                await page.evaluate("window.scrollBy(0, window.innerHeight);")
-                await page.wait_for_timeout(800)
-            texto = await page.inner_text("body")
-            await browser.close()
-            await send_long_message(context.bot, update.effective_chat.id, texto[:4000])
-    except Exception as e:
-        await update.message.reply_text(f"Error al obtener texto: {e}")
-
 # --------- AYUDA, AVISO PRIVADO Y MAIN ---------
 async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ayuda_last_sent
@@ -939,8 +915,6 @@ async def comandos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     lista = [
         "/cartelera - Cartelera deportiva",
-        "/htmlcartelera - HTML cartelera",
-        "/textocartelera - Texto cartelera",
         "/hora - Hora Chile",
         "/noche - Activar modo noche manual (solo admin)",
         "/ayuda - Ayuda y contacto",
@@ -964,8 +938,6 @@ def main():
     )
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("cartelera", enviar_eventos_diarios))
-    application.add_handler(CommandHandler("htmlcartelera", enviar_html))
-    application.add_handler(CommandHandler("textocartelera", enviar_texto_body))
     application.add_handler(CommandHandler("hora", hora_chile))
     application.add_handler(CommandHandler("noche", modo_noche_manual))
     application.add_handler(CommandHandler("ayuda", ayuda))
