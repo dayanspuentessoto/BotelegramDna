@@ -36,9 +36,35 @@ AYUDA_RATE_LIMIT_SECONDS = 240
 ayuda_last_sent = {}
 ADMIN_ID = 5032964793
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
+# --------- CONFIGURACIÓN DE HORARIOS MODO NOCHE/DÍA ---------
+# Variables globales para los horarios (por defecto 23:00 y 08:00)
+MODO_NOCHE_HORA = 23
+MODO_NOCHE_MINUTO = 0
+MODO_DIA_HORA = 8
+MODO_DIA_MINUTO = 0
+HORARIO_FILE = "horario_noche_dia.json"
+
+def cargar_horarios():
+    global MODO_NOCHE_HORA, MODO_NOCHE_MINUTO, MODO_DIA_HORA, MODO_DIA_MINUTO
+    try:
+        with open(HORARIO_FILE, "r") as f:
+            data = json.load(f)
+            MODO_NOCHE_HORA = data.get("noche_hora", 23)
+            MODO_NOCHE_MINUTO = data.get("noche_minuto", 0)
+            MODO_DIA_HORA = data.get("dia_hora", 8)
+            MODO_DIA_MINUTO = data.get("dia_minuto", 0)
+    except Exception:
+        pass
+
+def guardar_horarios():
+    data = {
+        "noche_hora": MODO_NOCHE_HORA,
+        "noche_minuto": MODO_NOCHE_MINUTO,
+        "dia_hora": MODO_DIA_HORA,
+        "dia_minuto": MODO_DIA_MINUTO
+    }
+    with open(HORARIO_FILE, "w") as f:
+        json.dump(data, f)
 
 # --------- UTILIDADES Y ESTADO ---------
 async def hash_mgs_categorias(categorias):
@@ -270,25 +296,18 @@ async def send_long_message(bot, chat_id, text, parse_mode=None, thread_id=None)
 
 # --------- FORMATO CARTELERA DISNEY/ESPN PERSONALIZADO ---------
 def formatear_cartelera_telegram(texto, fecha_formato=None):
-    """
-    Convierte texto plano de agenda Disney/ESPN en formato bonito tipo cartelera para Telegram.
-    Omite "Plan Premium Disney+ /", agrupa por competencia, y formatea como ejemplo dado.
-    """
     lineas = texto.strip().split("\n")
-    # Detectar si la primera línea es el día (por ejemplo: "Viernes 5")
     primer_linea = lineas[0]
     dia_titulo = ""
     m_dia = re.match(r"^(Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)\s+(\d+)", primer_linea, re.IGNORECASE)
     if m_dia:
         dia_titulo = primer_linea
         lineas = lineas[1:]
-        # Si no se especifica fecha_formato, la generamos
         if not fecha_formato:
             n_dia = int(m_dia.group(2))
             hoy = datetime.datetime.now(TZ)
             mes = hoy.month
             anio = hoy.year
-            # Si es para el mes siguiente (ejemplo: día 1, pero hoy es 30)
             if n_dia < hoy.day:
                 mes += 1
                 if mes > 12:
@@ -304,15 +323,12 @@ def formatear_cartelera_telegram(texto, fecha_formato=None):
         linea = linea.strip()
         if not linea:
             continue
-        # Quitar "Plan Premium Disney+ / " (y variantes)
         linea = re.sub(r"^Plan Premium Disney\+ ?/ ?", "", linea)
-        # Extraer hora y resto
         m = re.match(r"^(\d{1,2}:\d{2}) ?(.*)", linea)
         if not m:
             continue
         hora = m.group(1)
         resto = m.group(2)
-        # Separar canal y evento
         partes = [x.strip() for x in resto.split("–")]
         if len(partes) >= 3:
             canal, competencia, descripcion = partes[0], partes[1], " – ".join(partes[2:])
@@ -324,9 +340,7 @@ def formatear_cartelera_telegram(texto, fecha_formato=None):
             canal = ""
             descripcion = partes[0] if partes else resto
 
-        # Limpiar canal
         canal = canal.replace("/", "").strip()
-        # Si la competencia tiene "Eliminatorias UEFA", agrupa por "Eliminatorias UEFA"
         if "Eliminatorias UEFA" in competencia:
             key = "Eliminatorias UEFA"
         else:
@@ -334,7 +348,6 @@ def formatear_cartelera_telegram(texto, fecha_formato=None):
 
         if key not in grupos:
             grupos[key] = []
-        # Armar canal final (si hay canal, si no sólo deja la descripción)
         canal_final = canal if canal else ""
         grupos[key].append((hora, descripcion, canal_final))
 
@@ -446,18 +459,15 @@ async def disney(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Usa el comando así:\n/disney <URL_de_ESPN> o pega el texto de la programación")
         return
     arg = " ".join(context.args)
-    # Si es URL, hacemos scraping normal
     if arg.startswith("http"):
         url = arg
         try:
             mensajes_por_dia = await get_programacion_espn_playwright(url)
             if mensajes_por_dia:
-                # Para cada día, formatea bonito
                 formateados = []
                 for txt in mensajes_por_dia:
                     formateados.append(formatear_cartelera_telegram(txt))
                 ultima_agenda_disney = formateados
-                # Enviar mensaje largo formateado (con Markdown)
                 for cartelera_formateada in formateados:
                     for i in range(0, len(cartelera_formateada), 3900):
                         enviado = False
@@ -475,7 +485,6 @@ async def disney(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             except Exception as e:
                                 logging.error(f"Error inesperado enviando mensaje: {e}")
                                 break
-                # --- AGENDAR RECORDATORIO ---
                 dia_max = extraer_ultima_fecha_agenda(mensajes_por_dia)
                 if dia_max:
                     hoy = datetime.datetime.now(TZ)
@@ -499,7 +508,6 @@ async def disney(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await update.message.reply_text(f"❌ Error al procesar la página: {e}")
     else:
-        # Es texto pegado manual de programación
         texto = arg
         cartelera_formateada = formatear_cartelera_telegram(texto)
         ultima_agenda_disney = [cartelera_formateada]
@@ -863,7 +871,97 @@ async def respuesta_privada(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "También puedes escribir /ayuda para ver información y recursos útiles."
     )
 
+# --------- COMANDO HORANOCHE ---------
+async def horanoche(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("Este comando solo puede usarse por privado.")
+        return
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("Solo el administrador puede cambiar el horario de modo noche.")
+        return
+    if not context.args or len(context.args) == 0:
+        await update.message.reply_text("Usa el comando así: /horanoche HH:MM\nEjemplo: /horanoche 22:30")
+        return
+    arg = context.args[0]
+    match = re.match(r"^(\d{1,2}):(\d{2})$", arg)
+    if not match:
+        await update.message.reply_text("Formato incorrecto, usa HH:MM (ejemplo: 22:30)")
+        return
+    global MODO_NOCHE_HORA, MODO_NOCHE_MINUTO
+    MODO_NOCHE_HORA = int(match.group(1))
+    MODO_NOCHE_MINUTO = int(match.group(2))
+    guardar_horarios()
+    await update.message.reply_text(f"✅ Horario de activación automática de modo noche actualizado a las {MODO_NOCHE_HORA:02d}:{MODO_NOCHE_MINUTO:02d}.")
+
+    if context.job_queue:
+        context.job_queue.run_daily(
+            lambda ctx: activar_modo_noche(ctx, GENERAL_CHAT_ID),
+            time=datetime.time(hour=MODO_NOCHE_HORA, minute=MODO_NOCHE_MINUTO, tzinfo=TZ),
+            name="activar_modo_noche",
+            replace=True
+        )
+
+# --------- COMANDO HORADIA ---------
+async def horadia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("Este comando solo puede usarse por privado.")
+        return
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("Solo el administrador puede cambiar el horario de fin de modo noche.")
+        return
+    if not context.args or len(context.args) == 0:
+        await update.message.reply_text("Usa el comando así: /horadia HH:MM\nEjemplo: /horadia 07:45")
+        return
+    arg = context.args[0]
+    match = re.match(r"^(\d{1,2}):(\d{2})$", arg)
+    if not match:
+        await update.message.reply_text("Formato incorrecto, usa HH:MM (ejemplo: 07:45)")
+        return
+    global MODO_DIA_HORA, MODO_DIA_MINUTO
+    MODO_DIA_HORA = int(match.group(1))
+    MODO_DIA_MINUTO = int(match.group(2))
+    guardar_horarios()
+    await update.message.reply_text(f"✅ Horario de desactivación automática de modo noche actualizado a las {MODO_DIA_HORA:02d}:{MODO_DIA_MINUTO:02d}.")
+
+    if context.job_queue:
+        context.job_queue.run_daily(
+            desactivar_modo_noche,
+            time=datetime.time(hour=MODO_DIA_HORA, minute=MODO_DIA_MINUTO, tzinfo=TZ),
+            name="desactivar_modo_noche",
+            replace=True
+        )
+
+# --------- COMANDO COMANDOS ---------
+async def comandos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != "private":
+        return
+    lista = [
+        "/cartelera - Cartelera deportiva",
+        "/htmlcartelera - HTML cartelera",
+        "/textocartelera - Texto cartelera",
+        "/hora - Hora Chile",
+        "/noche - Activar modo noche manual (solo admin)",
+        "/ayuda - Ayuda y contacto",
+        "/pelis - Últimos estrenos MGS",
+        "/disney <URL o texto> - Agenda Disney/ESPN",
+        "/enviardisney - Enviar agenda Disney al grupo",
+        "/horanoche HH:MM - Cambiar horario de activación automática modo noche (solo admin, privado)",
+        "/horadia HH:MM - Cambiar horario de desactivación automática modo noche (solo admin, privado)",
+        "/comandos - Mostrar esta lista de comandos"
+    ]
+    await update.message.reply_text(
+        "*Comandos disponibles:*\n\n" + "\n".join(lista),
+        parse_mode="Markdown"
+    )
+
+# --------- MAIN ---------
 def main():
+    cargar_horarios()
+    logging.basicConfig(
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    )
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("cartelera", enviar_eventos_diarios))
     application.add_handler(CommandHandler("htmlcartelera", enviar_html))
@@ -874,14 +972,17 @@ def main():
     application.add_handler(CommandHandler("pelis", pelis))
     application.add_handler(CommandHandler("disney", disney))
     application.add_handler(CommandHandler("enviardisney", enviardisney))
+    application.add_handler(CommandHandler("horanoche", horanoche))
+    application.add_handler(CommandHandler("horadia", horadia))
+    application.add_handler(CommandHandler("comandos", comandos))
     application.job_queue.run_daily(
         lambda context: activar_modo_noche(context, GENERAL_CHAT_ID),
-        time=datetime.time(hour=23, minute=0, tzinfo=TZ),
+        time=datetime.time(hour=MODO_NOCHE_HORA, minute=MODO_NOCHE_MINUTO, tzinfo=TZ),
         name="activar_modo_noche"
     )
     application.job_queue.run_daily(
         desactivar_modo_noche,
-        time=datetime.time(hour=8, minute=0, tzinfo=TZ),
+        time=datetime.time(hour=MODO_DIA_HORA, minute=MODO_DIA_MINUTO, tzinfo=TZ),
         name="desactivar_modo_noche"
     )
     application.job_queue.run_daily(
