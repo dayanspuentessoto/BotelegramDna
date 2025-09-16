@@ -65,6 +65,17 @@ def guardar_horarios():
     with open(HORARIO_FILE, "w") as f:
         json.dump(data, f)
 
+# --------- DECORADOR SAFE_COMMAND PARA TODOS LOS COMANDOS ---------
+def safe_command(func):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            await func(update, context)
+        except Exception as e:
+            logging.error(f"Error en comando {func.__name__}: {e}", exc_info=True)
+            if update and update.effective_chat and getattr(update, 'message', None):
+                await update.message.reply_text(f"❌ Error inesperado en el comando. Contacta al administrador.")
+    return wrapper
+
 # --------- UTILIDADES Y ESTADO ---------
 async def hash_mgs_categorias(categorias):
     contenido = json.dumps(categorias, sort_keys=True, ensure_ascii=False)
@@ -285,6 +296,9 @@ async def send_long_message(bot, chat_id, text, parse_mode=None, thread_id=None)
                 await asyncio.sleep(e.retry_after)
             except TelegramError as e:
                 logging.error(f"Telegram error: {e}")
+                if "can't parse entities" in str(e) and "parse_mode" in params:
+                    params.pop("parse_mode", None)
+                    continue
                 if "Message thread not found" in str(e) and "message_thread_id" in params:
                     params.pop("message_thread_id", None)
                     continue
@@ -390,6 +404,7 @@ def extraer_ultima_fecha_agenda(mensajes_por_dia):
         return max(dias)
     return None
 
+@safe_command
 async def enviar_recordatorio_disney(context: ContextTypes.DEFAULT_TYPE):
     user_id = context.job.data
     await context.bot.send_message(
@@ -448,7 +463,7 @@ async def get_programacion_espn_playwright(url: str) -> list:
             mensajes_por_dia.append(f"{current_day}\n" + "\n".join(current_events))
     return mensajes_por_dia
 
-# --------- COMANDO /DISNEY CON FORMATO CARTELERA DEPORTIVA MULTI-DÍA ---------
+@safe_command
 async def disney(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ultima_agenda_disney
     if update.effective_chat.type != "private":
@@ -527,6 +542,7 @@ async def disney(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logging.error(f"Error inesperado enviando mensaje: {e}")
                     break
 
+@safe_command
 async def enviardisney(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ultima_agenda_disney
     if update.effective_chat.type != "private":
@@ -575,7 +591,7 @@ async def enviardisney(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ No se pudo enviar la agenda.")
 
-# --------- COMANDO /PELIS Y ENVÍO/MGS AUTOMÁTICO ---------
+@safe_command
 async def pelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         data = await scrape_mgs_content()
@@ -611,6 +627,7 @@ async def pelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_long_message(context.bot, update.effective_chat.id, f"Error: {e}", parse_mode="Markdown")
         logging.error(f"Error en /pelis: {e}")
 
+@safe_command
 async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
     try:
         data = await scrape_mgs_content()
@@ -636,38 +653,6 @@ async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logging.error(f"Error en actualización MGS: {e}")
 
-# --------- ENVÍO EVENTOS DIARIOS ---------
-async def enviar_eventos_diarios(update: Update = None, context: ContextTypes.DEFAULT_TYPE = None):
-    try:
-        # Determinar bot según contexto
-        if context is None:
-            return
-        bot = context.bot
-        hoy, manana = dias_a_mostrar()
-        partidos = await scrape_cartelera_table()
-        partidos_hoy = filtra_partidos_por_fecha(partidos, hoy)
-        partidos_manana = filtra_partidos_por_fecha(partidos, manana)
-        thread_id = EVENTOS_DEPORTIVOS_THREAD_ID
-        chat_id = GENERAL_CHAT_ID
-        if partidos_hoy:
-            agrupados_hoy = agrupa_partidos_por_campeonato(partidos_hoy)
-            mensaje_hoy = formato_mensaje_partidos(agrupados_hoy, hoy)
-            await send_long_message(bot, chat_id, mensaje_hoy, parse_mode="Markdown", thread_id=thread_id)
-        else:
-            await send_long_message(bot, chat_id, "No hay partidos para hoy.", thread_id=thread_id)
-        if partidos_manana:
-            agrupados_manana = agrupa_partidos_por_campeonato(partidos_manana)
-            mensaje_manana = formato_mensaje_partidos(agrupados_manana, manana)
-            await send_long_message(bot, chat_id, mensaje_manana, parse_mode="Markdown", thread_id=thread_id)
-        else:
-            await send_long_message(bot, chat_id, "No hay partidos para mañana.", thread_id=thread_id)
-        # Si es comando, responde confirmación
-        if update is not None:
-            await update.message.reply_text("✅ Cartelera deportiva enviada al grupo.")
-    except Exception as e:
-        await send_long_message(bot, GENERAL_CHAT_ID, f"Error al obtener cartelera: {str(e)}", thread_id=EVENTOS_DEPORTIVOS_THREAD_ID)
-        logging.error(f"Error en envío diario: {e}")
-
 # --------- FUNCIONES DE GRUPO: BIENVENIDA, DESPEDIDA, MODO NOCHE, RESTRICCIONES ---------
 def obtener_saludo():
     hora = datetime.datetime.now(TZ).hour
@@ -678,6 +663,7 @@ def obtener_saludo():
     else:
         return "¡Buenas noches!"
 
+@safe_command
 async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_member = getattr(update, "chat_member", None)
     if chat_member and getattr(chat_member, "new_chat_members", None):
@@ -707,6 +693,7 @@ async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 thread_id=GENERAL_THREAD_ID
             )
 
+@safe_command
 async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_member = getattr(update, "chat_member", None)
     if not chat_member or chat_member.old_chat_member.status not in ['left', 'kicked']:
@@ -724,6 +711,7 @@ async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
         thread_id=GENERAL_THREAD_ID
     )
 
+@safe_command
 async def respuesta_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
@@ -738,6 +726,7 @@ async def respuesta_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
         thread_id=GENERAL_THREAD_ID
     )
 
+@safe_command
 async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     hora = datetime.datetime.now(TZ).hour
     if 23 <= hora or hora < 8:
@@ -751,6 +740,7 @@ async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logging.warning(f"No se pudo borrar el mensaje de usuario {user_id} por modo noche: {e}")
 
+@safe_command
 async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
@@ -766,6 +756,7 @@ async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Error al activar modo noche: {e}")
 
+@safe_command
 async def activar_modo_noche(context: ContextTypes.DEFAULT_TYPE, chat_id):
     permisos = ChatPermissions(
         can_send_messages=False,
@@ -779,6 +770,7 @@ async def activar_modo_noche(context: ContextTypes.DEFAULT_TYPE, chat_id):
     await context.bot.set_chat_permissions(chat_id, permissions=permisos)
     await send_long_message(context.bot, chat_id, "🌙 Modo noche activado. El canal queda restringido hasta las 08:00.", thread_id=GENERAL_THREAD_ID)
 
+@safe_command
 async def desactivar_modo_noche(context: ContextTypes.DEFAULT_TYPE):
     permisos = ChatPermissions(
         can_send_messages=True,
@@ -792,6 +784,7 @@ async def desactivar_modo_noche(context: ContextTypes.DEFAULT_TYPE):
     await context.bot.set_chat_permissions(GENERAL_CHAT_ID, permissions=permisos)
     await send_long_message(context.bot, GENERAL_CHAT_ID, "☀️ ¡Fin del modo noche! Ya pueden enviar mensajes.", thread_id=GENERAL_THREAD_ID)
 
+@safe_command
 async def hora_chile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ahora = datetime.datetime.now(TZ)
     if update.effective_chat.type == "private":
@@ -808,6 +801,7 @@ async def hora_chile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # --------- AYUDA, AVISO PRIVADO Y MAIN ---------
+@safe_command
 async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ayuda_last_sent
     texto = (
@@ -827,6 +821,7 @@ async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await send_long_message(context.bot, GENERAL_CHAT_ID, texto, thread_id=GENERAL_THREAD_ID)
 
+@safe_command
 async def respuesta_privada(update: Update, context: ContextTypes.DEFAULT_TYPE):
     saludo = obtener_saludo()
     user = update.effective_user
@@ -847,74 +842,14 @@ async def respuesta_privada(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "También puedes escribir /ayuda para ver información y recursos útiles."
     )
 
-# --------- COMANDO HORANOCHE ---------
-async def horanoche(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type != "private":
-        await update.message.reply_text("Este comando solo puede usarse por privado.")
-        return
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("Solo el administrador puede cambiar el horario de modo noche.")
-        return
-    if not context.args or len(context.args) == 0:
-        await update.message.reply_text("Usa el comando así: /horanoche HH:MM\nEjemplo: /horanoche 22:30")
-        return
-    arg = context.args[0]
-    match = re.match(r"^(\d{1,2}):(\d{2})$", arg)
-    if not match:
-        await update.message.reply_text("Formato incorrecto, usa HH:MM (ejemplo: 22:30)")
-        return
-    global MODO_NOCHE_HORA, MODO_NOCHE_MINUTO
-    MODO_NOCHE_HORA = int(match.group(1))
-    MODO_NOCHE_MINUTO = int(match.group(2))
-    guardar_horarios()
-    await update.message.reply_text(f"✅ Horario de activación automática de modo noche actualizado a las {MODO_NOCHE_HORA:02d}:{MODO_NOCHE_MINUTO:02d}.")
-
-    if context.job_queue:
-        context.job_queue.run_daily(
-            lambda ctx: activar_modo_noche(ctx, GENERAL_CHAT_ID),
-            time=datetime.time(hour=MODO_NOCHE_HORA, minute=MODO_NOCHE_MINUTO, tzinfo=TZ),
-            name="activar_modo_noche",
-            replace=True
-        )
-
-# --------- COMANDO HORADIA ---------
-async def horadia(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type != "private":
-        await update.message.reply_text("Este comando solo puede usarse por privado.")
-        return
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("Solo el administrador puede cambiar el horario de fin de modo noche.")
-        return
-    if not context.args or len(context.args) == 0:
-        await update.message.reply_text("Usa el comando así: /horadia HH:MM\nEjemplo: /horadia 07:45")
-        return
-    arg = context.args[0]
-    match = re.match(r"^(\d{1,2}):(\d{2})$", arg)
-    if not match:
-        await update.message.reply_text("Formato incorrecto, usa HH:MM (ejemplo: 07:45)")
-        return
-    global MODO_DIA_HORA, MODO_DIA_MINUTO
-    MODO_DIA_HORA = int(match.group(1))
-    MODO_DIA_MINUTO = int(match.group(2))
-    guardar_horarios()
-    await update.message.reply_text(f"✅ Horario de desactivación automática de modo noche actualizado a las {MODO_DIA_HORA:02d}:{MODO_DIA_MINUTO:02d}.")
-
-    if context.job_queue:
-        context.job_queue.run_daily(
-            desactivar_modo_noche,
-            time=datetime.time(hour=MODO_DIA_HORA, minute=MODO_DIA_MINUTO, tzinfo=TZ),
-            name="desactivar_modo_noche",
-            replace=True
-        )
-
-# --------- COMANDO COMANDOS ---------
+@safe_command
 async def comandos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
         return
     lista = [
-        "/cartelera - Cartelera deportiva",
+        "/cartelera - Ver cartelera deportiva por privado",
+        "/enviarcartelera - Enviar la cartelera al grupo manualmente (privado)",
+        "/estadojobs - Estado de los jobs agendados (admin)",
         "/hora - Hora Chile",
         "/noche - Activar modo noche manual (solo admin)",
         "/ayuda - Ayuda y contacto",
@@ -930,7 +865,6 @@ async def comandos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# --------- MAIN ---------
 def main():
     cargar_horarios()
     logging.basicConfig(
@@ -938,6 +872,8 @@ def main():
     )
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("cartelera", enviar_eventos_diarios))
+    application.add_handler(CommandHandler("enviarcartelera", enviarcartelera))
+    application.add_handler(CommandHandler("estadojobs", estadojobs))
     application.add_handler(CommandHandler("hora", hora_chile))
     application.add_handler(CommandHandler("noche", modo_noche_manual))
     application.add_handler(CommandHandler("ayuda", ayuda))
@@ -948,6 +884,11 @@ def main():
     application.add_handler(CommandHandler("horadia", horadia))
     application.add_handler(CommandHandler("comandos", comandos))
     application.job_queue.run_daily(
+        enviar_eventos_diarios,
+        time=datetime.time(hour=10, minute=0, tzinfo=TZ),
+        name="cartelera_diaria"
+    )
+    application.job_queue.run_daily(
         lambda context: activar_modo_noche(context, GENERAL_CHAT_ID),
         time=datetime.time(hour=MODO_NOCHE_HORA, minute=MODO_NOCHE_MINUTO, tzinfo=TZ),
         name="activar_modo_noche"
@@ -956,11 +897,6 @@ def main():
         desactivar_modo_noche,
         time=datetime.time(hour=MODO_DIA_HORA, minute=MODO_DIA_MINUTO, tzinfo=TZ),
         name="desactivar_modo_noche"
-    )
-    application.job_queue.run_daily(
-        enviar_eventos_diarios,
-        time=datetime.time(hour=10, minute=0, tzinfo=TZ),
-        name="cartelera_diaria"
     )
     application.job_queue.run_daily(
         enviar_actualizacion_mgs,
