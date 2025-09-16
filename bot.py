@@ -7,7 +7,7 @@ import pytz
 import aiofiles
 import hashlib
 import asyncio
-from collections import defaultdict, OrderedDict
+from collections import OrderedDict
 
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
@@ -36,12 +36,13 @@ AYUDA_RATE_LIMIT_SECONDS = 240
 ayuda_last_sent = {}
 ADMIN_ID = 5032964793
 
-# --------- CONFIGURACIÓN DE HORARIOS MODO NOCHE/DÍA ---------
 MODO_NOCHE_HORA = 23
 MODO_NOCHE_MINUTO = 0
 MODO_DIA_HORA = 8
 MODO_DIA_MINUTO = 0
 HORARIO_FILE = "horario_noche_dia.json"
+cartelera_diaria_guardada = None
+ultima_agenda_disney = []
 
 def cargar_horarios():
     global MODO_NOCHE_HORA, MODO_NOCHE_MINUTO, MODO_DIA_HORA, MODO_DIA_MINUTO
@@ -65,7 +66,6 @@ def guardar_horarios():
     with open(HORARIO_FILE, "w") as f:
         json.dump(data, f)
 
-# --------- DECORADOR SAFE_COMMAND PARA TODOS LOS COMANDOS ---------
 def safe_command(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
@@ -76,7 +76,6 @@ def safe_command(func):
                 await update.message.reply_text(f"❌ Error inesperado en el comando. Contacta al administrador.")
     return wrapper
 
-# --------- UTILIDADES Y ESTADO ---------
 async def hash_mgs_categorias(categorias):
     contenido = json.dumps(categorias, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(contenido.encode("utf-8")).hexdigest()
@@ -94,7 +93,6 @@ async def guardar_estado_mgs(fecha, hash_):
     async with aiofiles.open(LAST_MGS_STATE_FILE, mode="w") as f:
         await f.write(json.dumps(data))
 
-# --------- CARTELERA DEPORTIVA ---------
 def dias_a_mostrar():
     hoy = datetime.datetime.now(TZ).date()
     manana = hoy + datetime.timedelta(days=1)
@@ -200,7 +198,387 @@ def formato_mensaje_partidos(agrupados, fecha):
             )
     return mensaje
 
-# --------- MGS (MAGISTV) SCRAPING Y FORMATO ---------
+async def send_long_message(bot, chat_id, text, parse_mode=None, thread_id=None):
+    for i in range(0, len(text), 4000):
+        params = {"chat_id": chat_id, "text": text[i:i+4000]}
+        if parse_mode:
+            params["parse_mode"] = parse_mode
+        if thread_id and str(chat_id).startswith("-100") and thread_id > 0:
+            params["message_thread_id"] = thread_id
+        enviado = False
+        while not enviado:
+            try:
+                await bot.send_message(**params)
+                enviado = True
+                await asyncio.sleep(1)
+            except RetryAfter as e:
+                logging.warning(f"Flood control: esperando {e.retry_after} segundos")
+                await asyncio.sleep(e.retry_after)
+            except TelegramError as e:
+                logging.error(f"Telegram error: {e}")
+                if "can't parse entities" in str(e) and "parse_mode" in params:
+                    params.pop("parse_mode", None)
+                    continue
+                if "Message thread not found" in str(e) and "message_thread_id" in params:
+                    params.pop("message_thread_id", None)
+                    continue
+                break
+            except Exception as e:
+                logging.error(f"Error inesperado enviando mensaje: {e}")
+                break
+
+@safe_command
+async def enviar_eventos_diarios(update: Update = None, context: ContextTypes.DEFAULT_TYPE = None):
+    global cartelera_diaria_guardada
+    try:
+        if context is None:
+            return
+        bot = context.bot
+        hoy, manana = dias_a_mostrar()
+        partidos = await scrape_cartelera_table()
+        partidos_hoy = filtra_partidos_por_fecha(partidos, hoy)
+        partidos_manana = filtra_partidos_por_fecha(partidos, manana)
+        thread_id = EVENTOS_DEPORTIVOS_THREAD_ID
+        chat_id = GENERAL_CHAT_ID
+        mensaje_final = ""
+        if partidos_hoy:
+            agrupados_hoy = agrupa_partidos_por_campeonato(partidos_hoy)
+            mensaje_hoy = formato_mensaje_partidos(agrupados_hoy, hoy)
+            mensaje_final += mensaje_hoy + "\n\n"
+            await send_long_message(bot, chat_id, mensaje_hoy, parse_mode="Markdown", thread_id=thread_id)
+        else:
+            mensaje_final += "No hay partidos para hoy.\n\n"
+            await send_long_message(bot, chat_id, "No hay partidos para hoy.", thread_id=thread_id)
+        if partidos_manana:
+            agrupados_manana = agrupa_partidos_por_campeonato(partidos_manana)
+            mensaje_manana = formato_mensaje_partidos(agrupados_manana, manana)
+            mensaje_final += mensaje_manana
+            await send_long_message(bot, chat_id, mensaje_manana, parse_mode="Markdown", thread_id=thread_id)
+        else:
+            mensaje_final += "No hay partidos para mañana."
+            await send_long_message(bot, chat_id, "No hay partidos para mañana.", thread_id=thread_id)
+        cartelera_diaria_guardada = mensaje_final.strip()
+        if update is not None and update.effective_chat.type == "private":
+            await update.message.reply_text(cartelera_diaria_guardada, parse_mode="Markdown")
+        elif update is not None:
+            await update.message.reply_text("✅ Cartelera deportiva enviada al grupo.")
+    except Exception as e:
+        if context is not None:
+            bot = context.bot
+        else:
+            bot = None
+        logging.error(f"Error en envío diario: {e}")
+        if bot:
+            await send_long_message(bot, GENERAL_CHAT_ID, f"Error al obtener cartelera: {str(e)}", thread_id=EVENTOS_DEPORTIVOS_THREAD_ID)
+        if update is not None and update.effective_chat.type == "private":
+            await update.message.reply_text("❌ Error al obtener la cartelera.")
+
+@safe_command
+async def enviarcartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global cartelera_diaria_guardada
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("Este comando solo puede usarse por privado.")
+        return
+    if not cartelera_diaria_guardada:
+        await update.message.reply_text("⚠️ No hay cartelera guardada todavía. Usa /cartelera primero para obtenerla.")
+        return
+    chat_id = GENERAL_CHAT_ID
+    thread_id = EVENTOS_DEPORTIVOS_THREAD_ID
+    try:
+        await send_long_message(context.bot, chat_id, cartelera_diaria_guardada, parse_mode="Markdown", thread_id=thread_id)
+        await update.message.reply_text("✅ Cartelera enviada al grupo correctamente.")
+    except Exception as e:
+        logging.error(f"Error en envio manual cartelera: {e}")
+        await update.message.reply_text("❌ Error al enviar la cartelera al grupo.")
+
+@safe_command
+async def estadojobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("Solo el administrador puede usar este comando.")
+        return
+    jobs = context.job_queue.jobs()
+    if not jobs:
+        await update.message.reply_text("No hay jobs agendados.")
+        return
+    mensaje = "*Jobs agendados:*\n\n"
+    for job in jobs:
+        mensaje += f"- Nombre: `{job.name}`\n"
+        mensaje += f"  Siguiente ejecución: `{job.next_run}`\n"
+        mensaje += f"  Función: `{job.callback.__name__}`\n\n"
+    await update.message.reply_text(mensaje, parse_mode="Markdown")
+
+@safe_command
+async def horanoche(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("Este comando solo puede usarse por privado.")
+        return
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("Solo el administrador puede cambiar el horario de modo noche.")
+        return
+    if not context.args or len(context.args) == 0:
+        await update.message.reply_text("Usa el comando así: /horanoche HH:MM\nEjemplo: /horanoche 22:30")
+        return
+    arg = context.args[0]
+    match = re.match(r"^(\d{1,2}):(\d{2})$", arg)
+    if not match:
+        await update.message.reply_text("Formato incorrecto, usa HH:MM (ejemplo: 22:30)")
+        return
+    global MODO_NOCHE_HORA, MODO_NOCHE_MINUTO
+    MODO_NOCHE_HORA = int(match.group(1))
+    MODO_NOCHE_MINUTO = int(match.group(2))
+    guardar_horarios()
+    await update.message.reply_text(f"✅ Horario de activación automática de modo noche actualizado a las {MODO_NOCHE_HORA:02d}:{MODO_NOCHE_MINUTO:02d}.")
+    if context.job_queue:
+        context.job_queue.run_daily(
+            lambda ctx: activar_modo_noche(ctx, GENERAL_CHAT_ID),
+            time=datetime.time(hour=MODO_NOCHE_HORA, minute=MODO_NOCHE_MINUTO, tzinfo=TZ),
+            name="activar_modo_noche",
+            replace=True
+        )
+
+@safe_command
+async def horadia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("Este comando solo puede usarse por privado.")
+        return
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("Solo el administrador puede cambiar el horario de fin de modo noche.")
+        return
+    if not context.args or len(context.args) == 0:
+        await update.message.reply_text("Usa el comando así: /horadia HH:MM\nEjemplo: /horadia 07:45")
+        return
+    arg = context.args[0]
+    match = re.match(r"^(\d{1,2}):(\d{2})$", arg)
+    if not match:
+        await update.message.reply_text("Formato incorrecto, usa HH:MM (ejemplo: 07:45)")
+        return
+    global MODO_DIA_HORA, MODO_DIA_MINUTO
+    MODO_DIA_HORA = int(match.group(1))
+    MODO_DIA_MINUTO = int(match.group(2))
+    guardar_horarios()
+    await update.message.reply_text(f"✅ Horario de desactivación automática de modo noche actualizado a las {MODO_DIA_HORA:02d}:{MODO_DIA_MINUTO:02d}.")
+    if context.job_queue:
+        context.job_queue.run_daily(
+            desactivar_modo_noche,
+            time=datetime.time(hour=MODO_DIA_HORA, minute=MODO_DIA_MINUTO, tzinfo=TZ),
+            name="desactivar_modo_noche",
+            replace=True
+        )
+
+@safe_command
+async def comandos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != "private":
+        return
+    lista = [
+        "/cartelera - Ver cartelera deportiva por privado",
+        "/enviarcartelera - Enviar la cartelera al grupo manualmente (privado)",
+        "/estadojobs - Estado de los jobs agendados (admin)",
+        "/hora - Hora Chile",
+        "/noche - Activar modo noche manual (solo admin)",
+        "/ayuda - Ayuda y contacto",
+        "/pelis - Últimos estrenos MGS",
+        "/disney <URL o texto> - Agenda Disney/ESPN",
+        "/enviardisney - Enviar agenda Disney al grupo",
+        "/horanoche HH:MM - Cambiar horario de activación automática modo noche (solo admin, privado)",
+        "/horadia HH:MM - Cambiar horario de desactivación automática modo noche (solo admin, privado)",
+        "/comandos - Mostrar esta lista de comandos"
+    ]
+    await update.message.reply_text(
+        "*Comandos disponibles:*\n\n" + "\n".join(lista),
+        parse_mode="Markdown"
+    )
+
+@safe_command
+async def hora_chile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ahora = datetime.datetime.now(TZ)
+    if update.effective_chat.type == "private":
+        await update.message.reply_text(
+            f"La hora en Chile es: {ahora.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"(Zona horaria detectada: {TZ.zone})"
+        )
+    else:
+        await send_long_message(
+            context.bot,
+            GENERAL_CHAT_ID,
+            f"La hora en Chile es: {ahora.strftime('%Y-%m-%d %H:%M:%S')}\n(Zona horaria detectada: {TZ.zone})",
+            thread_id=GENERAL_THREAD_ID
+        )
+
+@safe_command
+async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
+    admin_ids = [admin.user.id for admin in chat_admins]
+    if user_id not in admin_ids:
+        await update.message.reply_text("Solo el administrador puede activar el modo noche manualmente.")
+        return
+    try:
+        await activar_modo_noche(context, GENERAL_CHAT_ID)
+        await send_long_message(context.bot, GENERAL_CHAT_ID, "Modo noche activado manualmente hasta las 08:00.", thread_id=GENERAL_THREAD_ID)
+        if update.effective_chat.id != GENERAL_CHAT_ID:
+            await update.message.reply_text("Modo noche activado en el grupo D.N.A. TV.")
+    except Exception as e:
+        await update.message.reply_text(f"Error al activar modo noche: {e}")
+
+@safe_command
+async def activar_modo_noche(context: ContextTypes.DEFAULT_TYPE, chat_id):
+    permisos = ChatPermissions(
+        can_send_messages=False,
+        can_send_polls=False,
+        can_send_other_messages=False,
+        can_add_web_page_previews=False,
+        can_change_info=False,
+        can_invite_users=True,
+        can_pin_messages=False,
+    )
+    await context.bot.set_chat_permissions(chat_id, permissions=permisos)
+    await send_long_message(context.bot, chat_id, "🌙 Modo noche activado. El canal queda restringido hasta las 08:00.", thread_id=GENERAL_THREAD_ID)
+
+@safe_command
+async def desactivar_modo_noche(context: ContextTypes.DEFAULT_TYPE):
+    permisos = ChatPermissions(
+        can_send_messages=True,
+        can_send_polls=True,
+        can_send_other_messages=True,
+        can_add_web_page_previews=True,
+        can_change_info=False,
+        can_invite_users=True,
+        can_pin_messages=False,
+    )
+    await context.bot.set_chat_permissions(GENERAL_CHAT_ID, permissions=permisos)
+    await send_long_message(context.bot, GENERAL_CHAT_ID, "☀️ ¡Fin del modo noche! Ya pueden enviar mensajes.", thread_id=GENERAL_THREAD_ID)
+
+@safe_command
+async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global ayuda_last_sent
+    texto = (
+        "👋 ¡Hola! Tu mensaje ha sido recibido.\n"
+        "El administrador se comunicará contigo pronto.\n\n"
+        "Mientras esperas, revisa la sección SOPORTE DECOS que está dentro de este grupo D.N.A. TV.\n"
+        "Si tienes otra pregunta, escríbela aquí. ¡Gracias!"
+    )
+    user_id = update.effective_user.id
+    now = datetime.datetime.now().timestamp()
+    last_time = ayuda_last_sent.get(user_id, 0)
+    if now - last_time < AYUDA_RATE_LIMIT_SECONDS:
+        return
+    ayuda_last_sent[user_id] = now
+    if update.effective_chat.type == "private":
+        await update.message.reply_text(texto)
+    else:
+        await send_long_message(context.bot, GENERAL_CHAT_ID, texto, thread_id=GENERAL_THREAD_ID)
+
+@safe_command
+async def respuesta_privada(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    saludo = obtener_saludo()
+    user = update.effective_user
+    texto_usuario = update.message.text if update.message else ""
+    nombre = f"{user.first_name or ''} {user.last_name or ''}".strip() or user.username or str(user.id)
+    aviso = (
+        f"📩 *Nuevo mensaje en privado al bot:*\n"
+        f"👤 Usuario: {nombre} (ID: {user.id})\n"
+        f"💬 Mensaje: {texto_usuario}"
+    )
+    try:
+        await send_long_message(context.bot, ADMIN_ID, aviso, parse_mode="Markdown")
+    except Exception as e:
+        logging.warning(f"No se pudo avisar mensaje privado: {e}")
+    await update.message.reply_text(
+        f"{saludo} 👋 Soy un bot automático.\n"
+        "Si tienes preguntas o necesitas soporte, por favor contacta directamente al administrador (@Daayaanss).\n"
+        "También puedes escribir /ayuda para ver información y recursos útiles."
+    )
+
+def obtener_saludo():
+    hora = datetime.datetime.now(TZ).hour
+    if 6 <= hora < 12:
+        return "¡Buenos días!"
+    elif 12 <= hora < 19:
+        return "¡Buenas tardes!"
+    else:
+        return "¡Buenas noches!"
+
+@safe_command
+async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_member = getattr(update, "chat_member", None)
+    if chat_member and getattr(chat_member, "new_chat_members", None):
+        for member in chat_member.new_chat_members:
+            nombre = member.first_name if member.first_name else ""
+            apellidos = member.last_name if member.last_name else ""
+            nombre_completo = f"{nombre} {apellidos}".strip()
+            if not nombre_completo:
+                nombre_completo = member.username if member.username else "Usuario"
+            await send_long_message(
+                context.bot,
+                GENERAL_CHAT_ID,
+                f"{nombre_completo} BIENVENIDO(A) A NUESTRO SELECTO GRUPO D.N.A. TV, MANTENTE SIEMPRE AL DIA Y ACTUALIZADO, SI TIENES ALGUNA DUDA ESCRIBE EL COMANDO AYUDA PARA MAS INFO 😎🤖",
+                thread_id=GENERAL_THREAD_ID
+            )
+    elif hasattr(update, "message") and getattr(update.message, "new_chat_members", None):
+        for member in update.message.new_chat_members:
+            nombre = member.first_name if member.first_name else ""
+            apellidos = member.last_name if member.last_name else ""
+            nombre_completo = f"{nombre} {apellidos}".strip()
+            if not nombre_completo:
+                nombre_completo = member.username if member.username else "Usuario"
+            await send_long_message(
+                context.bot,
+                GENERAL_CHAT_ID,
+                f"{nombre_completo} BIENVENIDO(A) A NUESTRO SELECTO GRUPO D.N.A. TV, MANTENTE SIEMPRE AL DIA Y ACTUALIZADO, SI TIENES ALGUNA DUDA ESCRIBE EL COMANDO AYUDA PARA MAS INFO 😎🤖",
+                thread_id=GENERAL_THREAD_ID
+            )
+
+@safe_command
+async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_member = getattr(update, "chat_member", None)
+    if not chat_member or chat_member.old_chat_member.status not in ['left', 'kicked']:
+        return
+    user = chat_member.old_chat_member.user
+    nombre = user.first_name if user.first_name else ""
+    apellidos = user.last_name if user.last_name else ""
+    nombre_completo = f"{nombre} {apellidos}".strip()
+    if not nombre_completo:
+        nombre_completo = user.username if user.username else "Usuario"
+    await send_long_message(
+        context.bot,
+        GENERAL_CHAT_ID,
+        f"{nombre_completo} ADIOS, DESPUES NO RECLAMES NI PREGUNTES🤷🏻‍♂",
+        thread_id=GENERAL_THREAD_ID
+    )
+
+@safe_command
+async def respuesta_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
+    admin_ids = [admin.user.id for admin in chat_admins]
+    if user_id in admin_ids:
+        return
+    saludo = obtener_saludo()
+    await send_long_message(
+        context.bot,
+        GENERAL_CHAT_ID,
+        f"{saludo} 👋 Si necesitas ayuda, escribe el comando /ayuda para recibir información clara sobre cómo contactar al administrador y resolver tus dudas.",
+        thread_id=GENERAL_THREAD_ID
+    )
+
+@safe_command
+async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    hora = datetime.datetime.now(TZ).hour
+    if 23 <= hora or hora < 8:
+        user_id = update.effective_user.id
+        chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
+        admin_ids = [admin.user.id for admin in chat_admins]
+        if user_id in admin_ids:
+            return
+        try:
+            await update.message.delete()
+        except Exception as e:
+            logging.warning(f"No se pudo borrar el mensaje de usuario {user_id} por modo noche: {e}")
+
+# MGS Scraping y Formato
 async def scrape_mgs_content():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -277,37 +655,68 @@ def formato_mgs_msgs(data):
         logging.error("formato_mgs_msgs retornó []")
     return msgs
 
-# --------- ENVÍO LARGO ---------
-async def send_long_message(bot, chat_id, text, parse_mode=None, thread_id=None):
-    for i in range(0, len(text), 4000):
-        params = {"chat_id": chat_id, "text": text[i:i+4000]}
-        if parse_mode:
-            params["parse_mode"] = parse_mode
-        if thread_id and str(chat_id).startswith("-100") and thread_id > 0:
-            params["message_thread_id"] = thread_id
-        enviado = False
-        while not enviado:
-            try:
-                await bot.send_message(**params)
-                enviado = True
-                await asyncio.sleep(1)
-            except RetryAfter as e:
-                logging.warning(f"Flood control: esperando {e.retry_after} segundos")
-                await asyncio.sleep(e.retry_after)
-            except TelegramError as e:
-                logging.error(f"Telegram error: {e}")
-                if "can't parse entities" in str(e) and "parse_mode" in params:
-                    params.pop("parse_mode", None)
-                    continue
-                if "Message thread not found" in str(e) and "message_thread_id" in params:
-                    params.pop("message_thread_id", None)
-                    continue
-                break
-            except Exception as e:
-                logging.error(f"Error inesperado enviando mensaje: {e}")
-                break
+@safe_command
+async def pelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        data = await scrape_mgs_content()
+        if not data:
+            await send_long_message(context.bot, update.effective_chat.id, "No se pudo obtener datos de la web.", parse_mode="Markdown")
+            logging.error("scrape_mgs_content retornó None")
+            return
 
-# --------- FORMATO CARTELERA DISNEY/ESPN PERSONALIZADO ---------
+        fecha_actual = data.get("fecha", "")
+        categorias_actual = data.get("categorias", {})
+        hash_actual = await hash_mgs_categorias(categorias_actual)
+        ultima_fecha, ultimo_hash = await obtener_ultimo_estado_mgs()
+
+        if not fecha_actual:
+            await send_long_message(context.bot, update.effective_chat.id, "No se pudo determinar la fecha de actualización.", parse_mode="Markdown")
+            return
+
+        if fecha_actual == ultima_fecha and hash_actual == ultimo_hash:
+            await send_long_message(context.bot, update.effective_chat.id, "No hay cambios en el contenido desde la última actualización.", parse_mode="Markdown")
+            return
+
+        msgs = formato_mgs_msgs(data)
+        if not msgs:
+            await send_long_message(context.bot, update.effective_chat.id, "No hay contenido disponible.", parse_mode="Markdown")
+            return
+
+        fecha_txt = f"*{fecha_actual}*"
+        await send_long_message(context.bot, update.effective_chat.id, fecha_txt, parse_mode="Markdown")
+        for msg in msgs:
+            await send_long_message(context.bot, update.effective_chat.id, msg, parse_mode="Markdown")
+        await guardar_estado_mgs(fecha_actual, hash_actual)
+    except Exception as e:
+        await send_long_message(context.bot, update.effective_chat.id, f"Error: {e}", parse_mode="Markdown")
+        logging.error(f"Error en /pelis: {e}")
+
+@safe_command
+async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        data = await scrape_mgs_content()
+        if not data or not data["fecha"]:
+            logging.error("No se encontró fecha de actualización MGS.")
+            return
+
+        fecha_actual = data.get("fecha", "")
+        categorias_actual = data.get("categorias", {})
+        hash_actual = await hash_mgs_categorias(categorias_actual)
+        ultima_fecha, ultimo_hash = await obtener_ultimo_estado_mgs()
+
+        if fecha_actual == ultima_fecha and hash_actual == ultimo_hash:
+            logging.info("No hay cambios automáticos en MGS.")
+            return
+
+        msgs = formato_mgs_msgs(data)
+        fecha_txt = f"*{fecha_actual}*"
+        await send_long_message(context.bot, MGS_GROUP_ID, fecha_txt, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
+        for msg in msgs:
+            await send_long_message(context.bot, MGS_GROUP_ID, msg, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
+        await guardar_estado_mgs(fecha_actual, hash_actual)
+    except Exception as e:
+        logging.error(f"Error en actualización MGS: {e}")
+
 def formatear_cartelera_telegram(texto, fecha_formato=None):
     lineas = texto.strip().split("\n")
     primer_linea = lineas[0]
@@ -373,9 +782,6 @@ def formatear_cartelera_telegram(texto, fecha_formato=None):
 
     return mensaje.strip()
 
-# --------- DISNEY/ESPN AGENDA Y FORMATO DEPORTIVO ---------
-ultima_agenda_disney = []
-
 ESPN_FOOTER_FILTER = [
     "Terms of Use", "Privacy Policy", "Your US State Privacy Rights",
     "Children's Online Privacy Policy", "Interest-Based Ads",
@@ -403,14 +809,6 @@ def extraer_ultima_fecha_agenda(mensajes_por_dia):
     if dias:
         return max(dias)
     return None
-
-@safe_command
-async def enviar_recordatorio_disney(context: ContextTypes.DEFAULT_TYPE):
-    user_id = context.job.data
-    await context.bot.send_message(
-        chat_id=user_id,
-        text="¡Hola! Hoy es el último día de la agenda Disney/ESPN que cargaste.\n\nEnvíame el link nuevo con el comando /disney <URL> para obtener la agenda actualizada de más días. 😊"
-    )
 
 async def get_programacion_espn_playwright(url: str) -> list:
     async with async_playwright() as p:
@@ -592,277 +990,11 @@ async def enviardisney(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No se pudo enviar la agenda.")
 
 @safe_command
-async def pelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        data = await scrape_mgs_content()
-        if not data:
-            await send_long_message(context.bot, update.effective_chat.id, "No se pudo obtener datos de la web.", parse_mode="Markdown")
-            logging.error("scrape_mgs_content retornó None")
-            return
-
-        fecha_actual = data.get("fecha", "")
-        categorias_actual = data.get("categorias", {})
-        hash_actual = await hash_mgs_categorias(categorias_actual)
-        ultima_fecha, ultimo_hash = await obtener_ultimo_estado_mgs()
-
-        if not fecha_actual:
-            await send_long_message(context.bot, update.effective_chat.id, "No se pudo determinar la fecha de actualización.", parse_mode="Markdown")
-            return
-
-        if fecha_actual == ultima_fecha and hash_actual == ultimo_hash:
-            await send_long_message(context.bot, update.effective_chat.id, "No hay cambios en el contenido desde la última actualización.", parse_mode="Markdown")
-            return
-
-        msgs = formato_mgs_msgs(data)
-        if not msgs:
-            await send_long_message(context.bot, update.effective_chat.id, "No hay contenido disponible.", parse_mode="Markdown")
-            return
-
-        fecha_txt = f"*{fecha_actual}*"
-        await send_long_message(context.bot, update.effective_chat.id, fecha_txt, parse_mode="Markdown")
-        for msg in msgs:
-            await send_long_message(context.bot, update.effective_chat.id, msg, parse_mode="Markdown")
-        await guardar_estado_mgs(fecha_actual, hash_actual)
-    except Exception as e:
-        await send_long_message(context.bot, update.effective_chat.id, f"Error: {e}", parse_mode="Markdown")
-        logging.error(f"Error en /pelis: {e}")
-
-@safe_command
-async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
-    try:
-        data = await scrape_mgs_content()
-        if not data or not data["fecha"]:
-            logging.error("No se encontró fecha de actualización MGS.")
-            return
-
-        fecha_actual = data.get("fecha", "")
-        categorias_actual = data.get("categorias", {})
-        hash_actual = await hash_mgs_categorias(categorias_actual)
-        ultima_fecha, ultimo_hash = await obtener_ultimo_estado_mgs()
-
-        if fecha_actual == ultima_fecha and hash_actual == ultimo_hash:
-            logging.info("No hay cambios automáticos en MGS.")
-            return
-
-        msgs = formato_mgs_msgs(data)
-        fecha_txt = f"*{fecha_actual}*"
-        await send_long_message(context.bot, MGS_GROUP_ID, fecha_txt, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
-        for msg in msgs:
-            await send_long_message(context.bot, MGS_GROUP_ID, msg, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
-        await guardar_estado_mgs(fecha_actual, hash_actual)
-    except Exception as e:
-        logging.error(f"Error en actualización MGS: {e}")
-
-# --------- FUNCIONES DE GRUPO: BIENVENIDA, DESPEDIDA, MODO NOCHE, RESTRICCIONES ---------
-def obtener_saludo():
-    hora = datetime.datetime.now(TZ).hour
-    if 6 <= hora < 12:
-        return "¡Buenos días!"
-    elif 12 <= hora < 19:
-        return "¡Buenas tardes!"
-    else:
-        return "¡Buenas noches!"
-
-@safe_command
-async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_member = getattr(update, "chat_member", None)
-    if chat_member and getattr(chat_member, "new_chat_members", None):
-        for member in chat_member.new_chat_members:
-            nombre = member.first_name if member.first_name else ""
-            apellidos = member.last_name if member.last_name else ""
-            nombre_completo = f"{nombre} {apellidos}".strip()
-            if not nombre_completo:
-                nombre_completo = member.username if member.username else "Usuario"
-            await send_long_message(
-                context.bot,
-                GENERAL_CHAT_ID,
-                f"{nombre_completo} BIENVENIDO(A) A NUESTRO SELECTO GRUPO D.N.A. TV, MANTENTE SIEMPRE AL DIA Y ACTUALIZADO, SI TIENES ALGUNA DUDA ESCRIBE EL COMANDO AYUDA PARA MAS INFO 😎🤖",
-                thread_id=GENERAL_THREAD_ID
-            )
-    elif hasattr(update, "message") and getattr(update.message, "new_chat_members", None):
-        for member in update.message.new_chat_members:
-            nombre = member.first_name if member.first_name else ""
-            apellidos = member.last_name if member.last_name else ""
-            nombre_completo = f"{nombre} {apellidos}".strip()
-            if not nombre_completo:
-                nombre_completo = member.username if member.username else "Usuario"
-            await send_long_message(
-                context.bot,
-                GENERAL_CHAT_ID,
-                f"{nombre_completo} BIENVENIDO(A) A NUESTRO SELECTO GRUPO D.N.A. TV, MANTENTE SIEMPRE AL DIA Y ACTUALIZADO, SI TIENES ALGUNA DUDA ESCRIBE EL COMANDO AYUDA PARA MAS INFO 😎🤖",
-                thread_id=GENERAL_THREAD_ID
-            )
-
-@safe_command
-async def despedida(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_member = getattr(update, "chat_member", None)
-    if not chat_member or chat_member.old_chat_member.status not in ['left', 'kicked']:
-        return
-    user = chat_member.old_chat_member.user
-    nombre = user.first_name if user.first_name else ""
-    apellidos = user.last_name if user.last_name else ""
-    nombre_completo = f"{nombre} {apellidos}".strip()
-    if not nombre_completo:
-        nombre_completo = user.username if user.username else "Usuario"
-    await send_long_message(
-        context.bot,
-        GENERAL_CHAT_ID,
-        f"{nombre_completo} ADIOS, DESPUES NO RECLAMES NI PREGUNTES🤷🏻‍♂",
-        thread_id=GENERAL_THREAD_ID
-    )
-
-@safe_command
-async def respuesta_general(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
-    admin_ids = [admin.user.id for admin in chat_admins]
-    if user_id in admin_ids:
-        return
-    saludo = obtener_saludo()
-    await send_long_message(
-        context.bot,
-        GENERAL_CHAT_ID,
-        f"{saludo} 👋 Si necesitas ayuda, escribe el comando /ayuda para recibir información clara sobre cómo contactar al administrador y resolver tus dudas.",
-        thread_id=GENERAL_THREAD_ID
-    )
-
-@safe_command
-async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    hora = datetime.datetime.now(TZ).hour
-    if 23 <= hora or hora < 8:
-        user_id = update.effective_user.id
-        chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
-        admin_ids = [admin.user.id for admin in chat_admins]
-        if user_id in admin_ids:
-            return
-        try:
-            await update.message.delete()
-        except Exception as e:
-            logging.warning(f"No se pudo borrar el mensaje de usuario {user_id} por modo noche: {e}")
-
-@safe_command
-async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
-    admin_ids = [admin.user.id for admin in chat_admins]
-    if user_id not in admin_ids:
-        await update.message.reply_text("Solo el administrador puede activar el modo noche manualmente.")
-        return
-    try:
-        await activar_modo_noche(context, GENERAL_CHAT_ID)
-        await send_long_message(context.bot, GENERAL_CHAT_ID, "Modo noche activado manualmente hasta las 08:00.", thread_id=GENERAL_THREAD_ID)
-        if update.effective_chat.id != GENERAL_CHAT_ID:
-            await update.message.reply_text("Modo noche activado en el grupo D.N.A. TV.")
-    except Exception as e:
-        await update.message.reply_text(f"Error al activar modo noche: {e}")
-
-@safe_command
-async def activar_modo_noche(context: ContextTypes.DEFAULT_TYPE, chat_id):
-    permisos = ChatPermissions(
-        can_send_messages=False,
-        can_send_polls=False,
-        can_send_other_messages=False,
-        can_add_web_page_previews=False,
-        can_change_info=False,
-        can_invite_users=True,
-        can_pin_messages=False,
-    )
-    await context.bot.set_chat_permissions(chat_id, permissions=permisos)
-    await send_long_message(context.bot, chat_id, "🌙 Modo noche activado. El canal queda restringido hasta las 08:00.", thread_id=GENERAL_THREAD_ID)
-
-@safe_command
-async def desactivar_modo_noche(context: ContextTypes.DEFAULT_TYPE):
-    permisos = ChatPermissions(
-        can_send_messages=True,
-        can_send_polls=True,
-        can_send_other_messages=True,
-        can_add_web_page_previews=True,
-        can_change_info=False,
-        can_invite_users=True,
-        can_pin_messages=False,
-    )
-    await context.bot.set_chat_permissions(GENERAL_CHAT_ID, permissions=permisos)
-    await send_long_message(context.bot, GENERAL_CHAT_ID, "☀️ ¡Fin del modo noche! Ya pueden enviar mensajes.", thread_id=GENERAL_THREAD_ID)
-
-@safe_command
-async def hora_chile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ahora = datetime.datetime.now(TZ)
-    if update.effective_chat.type == "private":
-        await update.message.reply_text(
-            f"La hora en Chile es: {ahora.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"(Zona horaria detectada: {TZ.zone})"
-        )
-    else:
-        await send_long_message(
-            context.bot,
-            GENERAL_CHAT_ID,
-            f"La hora en Chile es: {ahora.strftime('%Y-%m-%d %H:%M:%S')}\n(Zona horaria detectada: {TZ.zone})",
-            thread_id=GENERAL_THREAD_ID
-        )
-
-# --------- AYUDA, AVISO PRIVADO Y MAIN ---------
-@safe_command
-async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global ayuda_last_sent
-    texto = (
-        "👋 ¡Hola! Tu mensaje ha sido recibido.\n"
-        "El administrador se comunicará contigo pronto.\n\n"
-        "Mientras esperas, revisa la sección SOPORTE DECOS que está dentro de este grupo D.N.A. TV.\n"
-        "Si tienes otra pregunta, escríbela aquí. ¡Gracias!"
-    )
-    user_id = update.effective_user.id
-    now = datetime.datetime.now().timestamp()
-    last_time = ayuda_last_sent.get(user_id, 0)
-    if now - last_time < AYUDA_RATE_LIMIT_SECONDS:
-        return
-    ayuda_last_sent[user_id] = now
-    if update.effective_chat.type == "private":
-        await update.message.reply_text(texto)
-    else:
-        await send_long_message(context.bot, GENERAL_CHAT_ID, texto, thread_id=GENERAL_THREAD_ID)
-
-@safe_command
-async def respuesta_privada(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    saludo = obtener_saludo()
-    user = update.effective_user
-    texto_usuario = update.message.text if update.message else ""
-    nombre = f"{user.first_name or ''} {user.last_name or ''}".strip() or user.username or str(user.id)
-    aviso = (
-        f"📩 *Nuevo mensaje en privado al bot:*\n"
-        f"👤 Usuario: {nombre} (ID: {user.id})\n"
-        f"💬 Mensaje: {texto_usuario}"
-    )
-    try:
-        await send_long_message(context.bot, ADMIN_ID, aviso, parse_mode="Markdown")
-    except Exception as e:
-        logging.warning(f"No se pudo avisar mensaje privado: {e}")
-    await update.message.reply_text(
-        f"{saludo} 👋 Soy un bot automático.\n"
-        "Si tienes preguntas o necesitas soporte, por favor contacta directamente al administrador (@Daayaanss).\n"
-        "También puedes escribir /ayuda para ver información y recursos útiles."
-    )
-
-@safe_command
-async def comandos(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type != "private":
-        return
-    lista = [
-        "/cartelera - Ver cartelera deportiva por privado",
-        "/enviarcartelera - Enviar la cartelera al grupo manualmente (privado)",
-        "/estadojobs - Estado de los jobs agendados (admin)",
-        "/hora - Hora Chile",
-        "/noche - Activar modo noche manual (solo admin)",
-        "/ayuda - Ayuda y contacto",
-        "/pelis - Últimos estrenos MGS",
-        "/disney <URL o texto> - Agenda Disney/ESPN",
-        "/enviardisney - Enviar agenda Disney al grupo",
-        "/horanoche HH:MM - Cambiar horario de activación automática modo noche (solo admin, privado)",
-        "/horadia HH:MM - Cambiar horario de desactivación automática modo noche (solo admin, privado)",
-        "/comandos - Mostrar esta lista de comandos"
-    ]
-    await update.message.reply_text(
-        "*Comandos disponibles:*\n\n" + "\n".join(lista),
-        parse_mode="Markdown"
+async def enviar_recordatorio_disney(context: ContextTypes.DEFAULT_TYPE):
+    user_id = context.job.data
+    await context.bot.send_message(
+        chat_id=user_id,
+        text="¡Hola! Hoy es el último día de la agenda Disney/ESPN que cargaste.\n\nEnvíame el link nuevo con el comando /disney <URL> para obtener la agenda actualizada de más días. 😊"
     )
 
 def main():
