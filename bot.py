@@ -41,7 +41,7 @@ MODO_NOCHE_MINUTO = 0
 MODO_DIA_HORA = 8
 MODO_DIA_MINUTO = 0
 HORARIO_FILE = "horario_noche_dia.json"
-cartelera_diaria_guardada = None
+cartelera_diaria_guardada = []
 ultima_agenda_disney = []
 
 def cargar_horarios():
@@ -199,6 +199,12 @@ def formato_mensaje_partidos(agrupados, fecha):
     return mensaje
 
 async def send_long_message(bot, chat_id, text, parse_mode=None, thread_id=None):
+    # Si es lista, recorrer y enviar cada fragmento
+    if isinstance(text, list):
+        for fragment in text:
+            await send_long_message(bot, chat_id, fragment, parse_mode, thread_id)
+        return
+    # Si es string, dividir en partes
     for i in range(0, len(text), 4000):
         params = {"chat_id": chat_id, "text": text[i:i+4000]}
         if parse_mode:
@@ -231,46 +237,38 @@ async def send_long_message(bot, chat_id, text, parse_mode=None, thread_id=None)
 async def enviar_eventos_diarios(update: Update = None, context: ContextTypes.DEFAULT_TYPE = None):
     global cartelera_diaria_guardada
     try:
-        if context is None:
-            return
-        bot = context.bot
         hoy, manana = dias_a_mostrar()
         partidos = await scrape_cartelera_table()
-        partidos_hoy = filtra_partidos_por_fecha(partidos, hoy)
-        partidos_manana = filtra_partidos_por_fecha(partidos, manana)
-        thread_id = EVENTOS_DEPORTIVOS_THREAD_ID
-        chat_id = GENERAL_CHAT_ID
-        mensaje_final = ""
-        if partidos_hoy:
+        mensajes_guardados = []
+        if partidos_hoy := filtra_partidos_por_fecha(partidos, hoy):
             agrupados_hoy = agrupa_partidos_por_campeonato(partidos_hoy)
             mensaje_hoy = formato_mensaje_partidos(agrupados_hoy, hoy)
-            mensaje_final += mensaje_hoy + "\n\n"
-            await send_long_message(bot, chat_id, mensaje_hoy, parse_mode="Markdown", thread_id=thread_id)
-        else:
-            mensaje_final += "No hay partidos para hoy.\n\n"
-            await send_long_message(bot, chat_id, "No hay partidos para hoy.", thread_id=thread_id)
-        if partidos_manana:
+            for i in range(0, len(mensaje_hoy), 4000):
+                mensajes_guardados.append(mensaje_hoy[i:i+4000])
+        if partidos_manana := filtra_partidos_por_fecha(partidos, manana):
             agrupados_manana = agrupa_partidos_por_campeonato(partidos_manana)
             mensaje_manana = formato_mensaje_partidos(agrupados_manana, manana)
-            mensaje_final += mensaje_manana
-            await send_long_message(bot, chat_id, mensaje_manana, parse_mode="Markdown", thread_id=thread_id)
+            for i in range(0, len(mensaje_manana), 4000):
+                mensajes_guardados.append(mensaje_manana[i:i+4000])
+        if not mensajes_guardados:
+            mensajes_guardados = ["No hay partidos para hoy ni mañana."]
+        cartelera_diaria_guardada = mensajes_guardados
+        if update is None:
+            # Envío automático: al grupo
+            for msg in cartelera_diaria_guardada:
+                await send_long_message(context.bot, GENERAL_CHAT_ID, msg, parse_mode="Markdown", thread_id=EVENTOS_DEPORTIVOS_THREAD_ID)
+        elif update.effective_chat.type == "private":
+            # Envío por comando: solo por privado
+            for msg in cartelera_diaria_guardada:
+                await update.message.reply_text(msg, parse_mode="Markdown")
         else:
-            mensaje_final += "No hay partidos para mañana."
-            await send_long_message(bot, chat_id, "No hay partidos para mañana.", thread_id=thread_id)
-        cartelera_diaria_guardada = mensaje_final.strip()
-        if update is not None and update.effective_chat.type == "private":
-            await update.message.reply_text(cartelera_diaria_guardada, parse_mode="Markdown")
-        elif update is not None:
-            await update.message.reply_text("✅ Cartelera deportiva enviada al grupo.")
+            # Si se ejecuta en grupo, mostrar aviso
+            await update.message.reply_text("Este comando solo funciona por privado.")
     except Exception as e:
-        if context is not None:
-            bot = context.bot
-        else:
-            bot = None
         logging.error(f"Error en envío diario: {e}")
-        if bot:
-            await send_long_message(bot, GENERAL_CHAT_ID, f"Error al obtener cartelera: {str(e)}", thread_id=EVENTOS_DEPORTIVOS_THREAD_ID)
-        if update is not None and update.effective_chat.type == "private":
+        if update and update.effective_chat.type == "private":
+            await update.message.reply_text("❌ Error al obtener la cartelera.")
+        elif update:
             await update.message.reply_text("❌ Error al obtener la cartelera.")
 
 @safe_command
@@ -285,7 +283,8 @@ async def enviarcartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = GENERAL_CHAT_ID
     thread_id = EVENTOS_DEPORTIVOS_THREAD_ID
     try:
-        await send_long_message(context.bot, chat_id, cartelera_diaria_guardada, parse_mode="Markdown", thread_id=thread_id)
+        for msg in cartelera_diaria_guardada:
+            await send_long_message(context.bot, chat_id, msg, parse_mode="Markdown", thread_id=thread_id)
         await update.message.reply_text("✅ Cartelera enviada al grupo correctamente.")
     except Exception as e:
         logging.error(f"Error en envio manual cartelera: {e}")
@@ -578,7 +577,6 @@ async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logging.warning(f"No se pudo borrar el mensaje de usuario {user_id} por modo noche: {e}")
 
-# MGS Scraping y Formato
 async def scrape_mgs_content():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
