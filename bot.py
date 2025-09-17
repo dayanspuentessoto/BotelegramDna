@@ -67,13 +67,22 @@ def guardar_horarios():
         json.dump(data, f)
 
 def safe_command(func):
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def wrapper(*args, **kwargs):
         try:
-            await func(update, context)
+            await func(*args, **kwargs)
         except Exception as e:
             logging.error(f"Error en comando {func.__name__}: {e}", exc_info=True)
-            if update and update.effective_chat and getattr(update, 'message', None):
-                await update.message.reply_text(f"❌ Error inesperado en el comando. Contacta al administrador.")
+            # Busca un update en los argumentos para intentar responderle al usuario
+            update = None
+            for arg in args:
+                if isinstance(arg, Update):
+                    update = arg
+                    break
+            if update and getattr(update, "effective_chat", None) and getattr(update, 'message', None):
+                try:
+                    await update.message.reply_text(f"❌ Error inesperado en el comando. Contacta al administrador.")
+                except Exception:
+                    pass
     return wrapper
 
 def dias_a_mostrar():
@@ -355,6 +364,7 @@ async def comandos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/estadojobs - Estado de los jobs agendados (admin)",
         "/hora - Hora Chile",
         "/noche - Activar modo noche manual (solo admin)",
+        "/dia - Desactivar modo noche manualmente (solo admin)",
         "/ayuda - Ayuda y contacto",
         "/pelis - Últimos estrenos MGS",
         "/disney <URL o texto> - Agenda Disney/ESPN",
@@ -399,6 +409,22 @@ async def modo_noche_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Modo noche activado en el grupo D.N.A. TV.")
     except Exception as e:
         await update.message.reply_text(f"Error al activar modo noche: {e}")
+
+@safe_command
+async def modo_dia_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
+    admin_ids = [admin.user.id for admin in chat_admins]
+    if user_id not in admin_ids:
+        await update.message.reply_text("Solo el administrador puede desactivar el modo noche manualmente.")
+        return
+    try:
+        await desactivar_modo_noche(context)
+        await send_long_message(context.bot, GENERAL_CHAT_ID, "Modo noche desactivado manualmente. ¡Ya pueden enviar mensajes!", thread_id=GENERAL_THREAD_ID)
+        if update.effective_chat.id != GENERAL_CHAT_ID:
+            await update.message.reply_text("Modo noche desactivado en el grupo D.N.A. TV.")
+    except Exception as e:
+        await update.message.reply_text(f"Error al desactivar modo noche: {e}")
 
 @safe_command
 async def activar_modo_noche(context: ContextTypes.DEFAULT_TYPE, chat_id):
@@ -1005,6 +1031,7 @@ def main():
     application.add_handler(CommandHandler("estadojobs", estadojobs))
     application.add_handler(CommandHandler("hora", hora_chile))
     application.add_handler(CommandHandler("noche", modo_noche_manual))
+    application.add_handler(CommandHandler("dia", modo_dia_manual))
     application.add_handler(CommandHandler("ayuda", ayuda))
     application.add_handler(CommandHandler("pelis", pelis))
     application.add_handler(CommandHandler("disney", disney))
