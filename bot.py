@@ -43,6 +43,7 @@ MODO_DIA_MINUTO = 0
 HORARIO_FILE = "horario_noche_dia.json"
 cartelera_diaria_guardada = []
 ultima_agenda_disney = []
+pelis_guardadas = []
 
 def cargar_horarios():
     global MODO_NOCHE_HORA, MODO_NOCHE_MINUTO, MODO_DIA_HORA, MODO_DIA_MINUTO
@@ -72,13 +73,13 @@ def safe_command(func):
             await func(*args, **kwargs)
         except Exception as e:
             logging.error(f"Error en comando {func.__name__}: {e}", exc_info=True)
-            # Busca un update en los argumentos para intentar responderle al usuario
+            # Busca un update si está en los argumentos
             update = None
             for arg in args:
                 if isinstance(arg, Update):
                     update = arg
                     break
-            if update and getattr(update, "effective_chat", None) and getattr(update, 'message', None):
+            if update and update.effective_chat and getattr(update, 'message', None):
                 try:
                     await update.message.reply_text(f"❌ Error inesperado en el comando. Contacta al administrador.")
                 except Exception:
@@ -364,9 +365,10 @@ async def comandos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/estadojobs - Estado de los jobs agendados (admin)",
         "/hora - Hora Chile",
         "/noche - Activar modo noche manual (solo admin)",
-        "/dia - Desactivar modo noche manualmente (solo admin)",
+        "/dia - Desactivar modo noche manual (solo admin)",
         "/ayuda - Ayuda y contacto",
         "/pelis - Últimos estrenos MGS",
+        "/enviarpelis - Enviar estrenos MGS al grupo manualmente (privado)",
         "/disney <URL o texto> - Agenda Disney/ESPN",
         "/enviardisney - Enviar agenda Disney al grupo",
         "/horanoche HH:MM - Cambiar horario de activación automática modo noche (solo admin, privado)",
@@ -420,11 +422,11 @@ async def modo_dia_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         await desactivar_modo_noche(context)
-        await send_long_message(context.bot, GENERAL_CHAT_ID, "Modo noche desactivado manualmente. ¡Ya pueden enviar mensajes!", thread_id=GENERAL_THREAD_ID)
+        await send_long_message(context.bot, GENERAL_CHAT_ID, "Modo día activado manualmente. Ya pueden enviar mensajes.", thread_id=GENERAL_THREAD_ID)
         if update.effective_chat.id != GENERAL_CHAT_ID:
-            await update.message.reply_text("Modo noche desactivado en el grupo D.N.A. TV.")
+            await update.message.reply_text("Modo día activado en el grupo D.N.A. TV.")
     except Exception as e:
-        await update.message.reply_text(f"Error al desactivar modo noche: {e}")
+        await update.message.reply_text(f"Error al activar modo día: {e}")
 
 @safe_command
 async def activar_modo_noche(context: ContextTypes.DEFAULT_TYPE, chat_id):
@@ -678,6 +680,7 @@ def formato_mgs_msgs(data):
 
 @safe_command
 async def pelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global pelis_guardadas
     try:
         data = await scrape_mgs_content()
         if not data:
@@ -704,6 +707,7 @@ async def pelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         fecha_txt = f"*{fecha_actual}*"
+        pelis_guardadas = [fecha_txt] + msgs
         await send_long_message(context.bot, update.effective_chat.id, fecha_txt, parse_mode="Markdown")
         for msg in msgs:
             await send_long_message(context.bot, update.effective_chat.id, msg, parse_mode="Markdown")
@@ -711,6 +715,25 @@ async def pelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await send_long_message(context.bot, update.effective_chat.id, f"Error: {e}", parse_mode="Markdown")
         logging.error(f"Error en /pelis: {e}")
+
+@safe_command
+async def enviarpelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global pelis_guardadas
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("Este comando solo puede usarse por privado.")
+        return
+    if not pelis_guardadas:
+        await update.message.reply_text("⚠️ No hay estrenos de MGS guardados todavía. Usa /pelis primero para obtenerlos.")
+        return
+    chat_id = MGS_GROUP_ID
+    thread_id = MGS_THREAD_ID
+    try:
+        for msg in pelis_guardadas:
+            await send_long_message(context.bot, chat_id, msg, parse_mode="Markdown", thread_id=thread_id)
+        await update.message.reply_text("✅ Estrenos MGS enviados al grupo correctamente.")
+    except Exception as e:
+        logging.error(f"Error en envio manual pelis: {e}")
+        await update.message.reply_text("❌ Error al enviar los estrenos MGS al grupo.")
 
 @safe_command
 async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
@@ -739,6 +762,7 @@ async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Error en actualización MGS: {e}")
 
 # --- Disney/ESPN ---
+# ... (no cambios a funciones relacionadas a Disney/ESPN, igual que antes) ...
 
 def formatear_cartelera_telegram(texto, fecha_formato=None):
     lineas = texto.strip().split("\n")
@@ -1034,6 +1058,7 @@ def main():
     application.add_handler(CommandHandler("dia", modo_dia_manual))
     application.add_handler(CommandHandler("ayuda", ayuda))
     application.add_handler(CommandHandler("pelis", pelis))
+    application.add_handler(CommandHandler("enviarpelis", enviarpelis))
     application.add_handler(CommandHandler("disney", disney))
     application.add_handler(CommandHandler("enviardisney", enviardisney))
     application.add_handler(CommandHandler("horanoche", horanoche))
