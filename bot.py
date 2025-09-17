@@ -76,23 +76,6 @@ def safe_command(func):
                 await update.message.reply_text(f"❌ Error inesperado en el comando. Contacta al administrador.")
     return wrapper
 
-async def hash_mgs_categorias(categorias):
-    contenido = json.dumps(categorias, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(contenido.encode("utf-8")).hexdigest()
-
-async def obtener_ultimo_estado_mgs():
-    try:
-        async with aiofiles.open(LAST_MGS_STATE_FILE, mode="r") as f:
-            data = json.loads(await f.read())
-            return data.get("fecha", ""), data.get("hash", "")
-    except Exception:
-        return "", ""
-
-async def guardar_estado_mgs(fecha, hash_):
-    data = {"fecha": fecha, "hash": hash_}
-    async with aiofiles.open(LAST_MGS_STATE_FILE, mode="w") as f:
-        await f.write(json.dumps(data))
-
 def dias_a_mostrar():
     hoy = datetime.datetime.now(TZ).date()
     manana = hoy + datetime.timedelta(days=1)
@@ -199,12 +182,10 @@ def formato_mensaje_partidos(agrupados, fecha):
     return mensaje
 
 async def send_long_message(bot, chat_id, text, parse_mode=None, thread_id=None):
-    # Si es lista, recorrer y enviar cada fragmento
     if isinstance(text, list):
         for fragment in text:
             await send_long_message(bot, chat_id, fragment, parse_mode, thread_id)
         return
-    # Si es string, dividir en partes
     for i in range(0, len(text), 4000):
         params = {"chat_id": chat_id, "text": text[i:i+4000]}
         if parse_mode:
@@ -254,15 +235,12 @@ async def enviar_eventos_diarios(update: Update = None, context: ContextTypes.DE
             mensajes_guardados = ["No hay partidos para hoy ni mañana."]
         cartelera_diaria_guardada = mensajes_guardados
         if update is None:
-            # Envío automático: al grupo
             for msg in cartelera_diaria_guardada:
                 await send_long_message(context.bot, GENERAL_CHAT_ID, msg, parse_mode="Markdown", thread_id=EVENTOS_DEPORTIVOS_THREAD_ID)
         elif update.effective_chat.type == "private":
-            # Envío por comando: solo por privado
             for msg in cartelera_diaria_guardada:
                 await update.message.reply_text(msg, parse_mode="Markdown")
         else:
-            # Si se ejecuta en grupo, mostrar aviso
             await update.message.reply_text("Este comando solo funciona por privado.")
     except Exception as e:
         logging.error(f"Error en envío diario: {e}")
@@ -303,7 +281,7 @@ async def estadojobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mensaje = "*Jobs agendados:*\n\n"
     for job in jobs:
         mensaje += f"- Nombre: `{job.name}`\n"
-        mensaje += f"  Siguiente ejecución: `{job.next_run}`\n"
+        mensaje += f"  Siguiente ejecución: `{job.next_t}`\n"
         mensaje += f"  Función: `{job.callback.__name__}`\n\n"
     await update.message.reply_text(mensaje, parse_mode="Markdown")
 
@@ -577,6 +555,25 @@ async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logging.warning(f"No se pudo borrar el mensaje de usuario {user_id} por modo noche: {e}")
 
+# ---- MGS, Disney, ESPN y funciones auxiliares ----
+
+async def hash_mgs_categorias(categorias):
+    contenido = json.dumps(categorias, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(contenido.encode("utf-8")).hexdigest()
+
+async def obtener_ultimo_estado_mgs():
+    try:
+        async with aiofiles.open(LAST_MGS_STATE_FILE, mode="r") as f:
+            data = json.loads(await f.read())
+            return data.get("fecha", ""), data.get("hash", "")
+    except Exception:
+        return "", ""
+
+async def guardar_estado_mgs(fecha, hash_):
+    data = {"fecha": fecha, "hash": hash_}
+    async with aiofiles.open(LAST_MGS_STATE_FILE, mode="w") as f:
+        await f.write(json.dumps(data))
+
 async def scrape_mgs_content():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -714,6 +711,8 @@ async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
         await guardar_estado_mgs(fecha_actual, hash_actual)
     except Exception as e:
         logging.error(f"Error en actualización MGS: {e}")
+
+# --- Disney/ESPN ---
 
 def formatear_cartelera_telegram(texto, fecha_formato=None):
     lineas = texto.strip().split("\n")
