@@ -79,11 +79,13 @@ def safe_command(func):
                 if isinstance(arg, Update):
                     update = arg
                     break
-            if update and update.effective_chat and getattr(update, 'message', None):
+            # Solo si hay update y es privado responde el error
+            if update and getattr(update, "effective_chat", None) and getattr(update, "message", None):
                 try:
                     await update.message.reply_text(f"❌ Error inesperado en el comando. Contacta al administrador.")
                 except Exception:
                     pass
+            # Si no hay update, es un job; no se puede responder por privado
     return wrapper
 
 def dias_a_mostrar():
@@ -224,6 +226,7 @@ async def send_long_message(bot, chat_id, text, parse_mode=None, thread_id=None)
                 logging.error(f"Error inesperado enviando mensaje: {e}")
                 break
 
+# ---- Comandos de cartelera ----
 @safe_command
 async def enviar_eventos_diarios(update: Update = None, context: ContextTypes.DEFAULT_TYPE = None):
     global cartelera_diaria_guardada
@@ -244,17 +247,22 @@ async def enviar_eventos_diarios(update: Update = None, context: ContextTypes.DE
         if not mensajes_guardados:
             mensajes_guardados = ["No hay partidos para hoy ni mañana."]
         cartelera_diaria_guardada = mensajes_guardados
-        if update is None:
+
+        # Si es comando (Update existe)
+        if update is not None and getattr(update, "effective_chat", None):
+            if update.effective_chat.type == "private":
+                for msg in cartelera_diaria_guardada:
+                    await update.message.reply_text(msg, parse_mode="Markdown")
+            else:
+                await update.message.reply_text("Este comando solo funciona por privado.")
+        # Si es job automático (Update es None)
+        else:
             for msg in cartelera_diaria_guardada:
                 await send_long_message(context.bot, GENERAL_CHAT_ID, msg, parse_mode="Markdown", thread_id=EVENTOS_DEPORTIVOS_THREAD_ID)
-        elif update.effective_chat.type == "private":
-            for msg in cartelera_diaria_guardada:
-                await update.message.reply_text(msg, parse_mode="Markdown")
-        else:
-            await update.message.reply_text("Este comando solo funciona por privado.")
     except Exception as e:
         logging.error(f"Error en envío diario: {e}")
-        if update and update.effective_chat.type == "private":
+        # Solo responde por privado si hay update y privado
+        if update and getattr(update, "effective_chat", None) and update.effective_chat.type == "private":
             await update.message.reply_text("❌ Error al obtener la cartelera.")
         elif update:
             await update.message.reply_text("❌ Error al obtener la cartelera.")
@@ -295,6 +303,7 @@ async def estadojobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mensaje += f"  Función: `{job.callback.__name__}`\n\n"
     await update.message.reply_text(mensaje, parse_mode="Markdown")
 
+# ---- Horarios de modo noche/día ----
 @safe_command
 async def horanoche(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
@@ -355,6 +364,7 @@ async def horadia(update: Update, context: ContextTypes.DEFAULT_TYPE):
             replace=True
         )
 
+# ---- Comandos básicos ----
 @safe_command
 async def comandos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
@@ -476,6 +486,7 @@ async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await send_long_message(context.bot, GENERAL_CHAT_ID, texto, thread_id=GENERAL_THREAD_ID)
 
+# ---- Mensajes privados y grupo ----
 @safe_command
 async def respuesta_privada(update: Update, context: ContextTypes.DEFAULT_TYPE):
     saludo = obtener_saludo()
@@ -583,7 +594,7 @@ async def restringir_mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logging.warning(f"No se pudo borrar el mensaje de usuario {user_id} por modo noche: {e}")
 
-# ---- MGS, Disney, ESPN y funciones auxiliares ----
+# --- MGS, Disney, ESPN y funciones auxiliares ----
 
 async def hash_mgs_categorias(categorias):
     contenido = json.dumps(categorias, sort_keys=True, ensure_ascii=False)
@@ -762,7 +773,22 @@ async def enviar_actualizacion_mgs(context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Error en actualización MGS: {e}")
 
 # --- Disney/ESPN ---
-# ... (no cambios a funciones relacionadas a Disney/ESPN, igual que antes) ...
+
+ESPN_FOOTER_FILTER = [
+    "Terms of Use", "Privacy Policy", "Your US State Privacy Rights",
+    "Children's Online Privacy Policy", "Interest-Based Ads",
+    "About Nielsen Measurement", "Do Not Sell or Share My Personal Information",
+    "Contact Us", "Disney Ad Sales Site", "Work for ESPN", "Corrections",
+    "ESPN BET Sportsbook", "PENN Entertainment", "Must be 21+ to wager",
+    "1-800-GAMBLER", "Copyright:",
+    "ESPN Enterprises, Inc. All rights reserved"
+]
+
+def es_footer_espn(linea: str) -> bool:
+    for palabra in ESPN_FOOTER_FILTER:
+        if palabra.lower() in linea.lower():
+            return True
+    return False
 
 def formatear_cartelera_telegram(texto, fecha_formato=None):
     lineas = texto.strip().split("\n")
@@ -828,22 +854,6 @@ def formatear_cartelera_telegram(texto, fecha_formato=None):
             mensaje += f"• {hora} | {descripcion}{canal_str}\n"
 
     return mensaje.strip()
-
-ESPN_FOOTER_FILTER = [
-    "Terms of Use", "Privacy Policy", "Your US State Privacy Rights",
-    "Children's Online Privacy Policy", "Interest-Based Ads",
-    "About Nielsen Measurement", "Do Not Sell or Share My Personal Information",
-    "Contact Us", "Disney Ad Sales Site", "Work for ESPN", "Corrections",
-    "ESPN BET Sportsbook", "PENN Entertainment", "Must be 21+ to wager",
-    "1-800-GAMBLER", "Copyright:",
-    "ESPN Enterprises, Inc. All rights reserved"
-]
-
-def es_footer_espn(linea: str) -> bool:
-    for palabra in ESPN_FOOTER_FILTER:
-        if palabra.lower() in linea.lower():
-            return True
-    return False
 
 def extraer_ultima_fecha_agenda(mensajes_por_dia):
     fecha_re = re.compile(r"(Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)\s+(\d{1,2})", re.IGNORECASE)
@@ -1044,6 +1054,7 @@ async def enviar_recordatorio_disney(context: ContextTypes.DEFAULT_TYPE):
         text="¡Hola! Hoy es el último día de la agenda Disney/ESPN que cargaste.\n\nEnvíame el link nuevo con el comando /disney <URL> para obtener la agenda actualizada de más días. 😊"
     )
 
+# ---- MAIN ----
 def main():
     cargar_horarios()
     logging.basicConfig(
