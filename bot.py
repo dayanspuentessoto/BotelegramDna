@@ -262,6 +262,25 @@ async def enviar_eventos_diarios_command(update: Update, context: ContextTypes.D
     await enviar_eventos_diarios_core(context=context, update=update)
 
 @safe_command
+async def enviarcartelera(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global cartelera_diaria_guardada
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("Este comando solo puede usarse por privado.")
+        return
+    if not cartelera_diaria_guardada:
+        await update.message.reply_text("⚠️ No hay cartelera guardada todavía. Usa /cartelera primero para obtenerla.")
+        return
+    chat_id = GENERAL_CHAT_ID
+    thread_id = EVENTOS_DEPORTIVOS_THREAD_ID
+    try:
+        for msg in cartelera_diaria_guardada:
+            await send_long_message(context.bot, chat_id, msg, parse_mode="Markdown", thread_id=thread_id)
+        await update.message.reply_text("✅ Cartelera enviada al grupo correctamente.")
+    except Exception as e:
+        logging.error(f"Error en envio manual cartelera: {e}")
+        await update.message.reply_text("❌ Error al enviar la cartelera al grupo.")
+
+@safe_command
 async def enviar_eventos_diarios_job(context: ContextTypes.DEFAULT_TYPE):
     await enviar_eventos_diarios_core(context=context, update=None)
 
