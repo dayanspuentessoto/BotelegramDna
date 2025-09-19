@@ -616,13 +616,17 @@ async def disney_core(context: ContextTypes.DEFAULT_TYPE, update: Update = None)
                             mes = 1
                             anio += 1
                     fecha_recordatorio = datetime.datetime(anio, mes, dia_max, 13, 0, tzinfo=TZ)
-                    if fecha_recordatorio > hoy:
+                    when_seconds = (fecha_recordatorio - hoy).total_seconds()
+                    if when_seconds > 0:
                         context.job_queue.run_once(
                             enviar_recordatorio_disney,
-                            when=(fecha_recordatorio - hoy).total_seconds(),
+                            when=when_seconds,
                             data=update.effective_user.id,
                             name=f"recordatorio_disney_{fecha_recordatorio.strftime('%Y%m%d')}"
                         )
+                        logging.info(f"Recordatorio Disney agendado para: {fecha_recordatorio.isoformat()} ({when_seconds} seconds from now)")
+                    else:
+                        logging.info("No se agenda recordatorio Disney porque la fecha ya pasó.")
             else:
                 if update:
                     await update.message.reply_text("⚠️ No encontré programación en la página.")
