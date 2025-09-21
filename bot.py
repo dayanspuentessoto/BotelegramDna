@@ -7,7 +7,6 @@ import pytz
 import aiofiles
 import hashlib
 import asyncio
-import unicodedata
 from collections import OrderedDict
 
 from playwright.async_api import async_playwright
@@ -313,22 +312,110 @@ def normalize_categoria(nombre):
     return nombre
 
 async def scrape_mgs_content():
+    import unicodedata
+
+    def normalize_categoria(nombre):
+        nombre = nombre.lower().strip()
+        nombre = ''.join(
+            c for c in unicodedata.normalize('NFD', nombre)
+            if unicodedata.category(c) != 'Mn'
+        )
+        return nombre
+
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
         page = await browser.new_page()
         await page.goto(URL_MGS, timeout=120000)
-        # ... scroll ...
+        prev_height = 0
+        for _ in range(60):
+            await page.evaluate("window.scrollBy(0, window.innerHeight);")
+            await page.wait_for_timeout(700)
+            curr_height = await page.evaluate("document.body.scrollHeight")
+            if curr_height == prev_height:
+                break
+            prev_height = curr_height
         html = await page.content()
         await browser.close()
-        # GUARDAR EL HTML
-       with open("debug_mgs.html", "w", encoding="utf-8") as f:
-    f.write(html)
-# Envía el archivo al admin por Telegram
-try:
-    await context.bot.send_document(chat_id=ADMIN_ID, document=open("debug_mgs.html", "rb"), filename="debug_mgs.html")
-except Exception as e:
-    logging.error(f"Error enviando debug_mgs.html: {e}")
 
+        # Envía el HTML por Telegram al admin (Railway no garantiza archivos locales)
+        try:
+            with open("debug_mgs.html", "w", encoding="utf-8") as f:
+                f.write(html)
+            # Si tienes context y bot, descomenta la siguiente línea:
+            # await context.bot.send_document(chat_id=ADMIN_ID, document=open("debug_mgs.html", "rb"), filename="debug_mgs.html")
+        except Exception as e:
+            print(f"Error guardando o enviando debug_mgs.html: {e}")
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        categorias_claves = [
+            "películas", "series", "anime", "cartoon/animado", "cartoon", "animado"
+        ]
+        categorias_claves_normalizadas = [normalize_categoria(cat) for cat in categorias_claves]
+        categorias = {}
+        clave_to_titulo = {}
+
+        # Recorrer todos los headers y capturar el contenido entre ellos
+        all_tags = soup.find_all(['h1', 'h2', 'h3', 'h4', 'strong', 'b'])
+        for idx, tag in enumerate(all_tags):
+            cat_name = tag.get_text(strip=True)
+            cat_norm = normalize_categoria(cat_name)
+            if cat_norm in categorias_claves_normalizadas:
+                if cat_norm not in categorias:
+                    categorias[cat_norm] = []
+                    clave_to_titulo[cat_norm] = cat_name
+                # Buscar los hermanos siguientes hasta el próximo header
+                for sib in tag.find_all_next():
+                    if sib == tag:
+                        continue
+                    if sib in all_tags:
+                        break
+                    # Solo extraer texto de nodos relevantes
+                    if sib.name in ['ul', 'ol']:
+                        for li in sib.find_all('li'):
+                            item = li.get_text(strip=True)
+                            if item and item not in categorias[cat_norm]:
+                                categorias[cat_norm].append(item)
+                    elif sib.name in ['p', 'span', 'div']:
+                        items = [x.strip() for x in sib.get_text(separator="\n").split("\n") if x.strip()]
+                        for item in items:
+                            if item and item not in categorias[cat_norm]:
+                                categorias[cat_norm].append(item)
+        # Backup: si no encontró nada, usa método viejo sobre el texto plano
+        if not categorias:
+            texto = soup.get_text("\n", strip=True)
+            lineas = texto.splitlines()
+            categoria_actual = None
+            for linea in lineas:
+                linea_strip = linea.strip()
+                if not linea_strip:
+                    continue
+                cat_norm = normalize_categoria(linea_strip)
+                if cat_norm in categorias_claves_normalizadas:
+                    categoria_actual = cat_norm
+                    if categoria_actual not in categorias:
+                        categorias[categoria_actual] = []
+                        clave_to_titulo[categoria_actual] = linea_strip
+                elif categoria_actual:
+                    if (
+                        not any(linea_strip.lower().startswith(cat) for cat in categorias_claves_normalizadas)
+                        and "todas las semanas tenemos contenido nuevo" not in linea_strip.lower()
+                        and linea_strip
+                    ):
+                        if linea_strip not in categorias[categoria_actual]:
+                            categorias[categoria_actual].append(linea_strip)
+
+        fecha_actualizacion = None
+        for tag in soup.find_all(['p', 'div', 'span', 'li']):
+            txt = tag.get_text(strip=True)
+            if "Actualización de contenido" in txt:
+                fecha_actualizacion = txt
+                break
+        return {
+            "fecha": fecha_actualizacion,
+            "categorias": {clave_to_titulo[k]: v for k, v in categorias.items()},
+            "html": html
+        }
 def formato_mgs_msgs(data):
     msgs = []
     FILTROS = [
