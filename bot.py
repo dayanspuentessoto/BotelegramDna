@@ -321,8 +321,13 @@ async def scrape_mgs_content():
         html = await page.content()
         await browser.close()
         # GUARDAR EL HTML
-        with open("debug_mgs.html", "w", encoding="utf-8") as f:
-            f.write(html)
+       with open("debug_mgs.html", "w", encoding="utf-8") as f:
+    f.write(html)
+# Envía el archivo al admin por Telegram
+try:
+    await context.bot.send_document(chat_id=ADMIN_ID, document=open("debug_mgs.html", "rb"), filename="debug_mgs.html")
+except Exception as e:
+    logging.error(f"Error enviando debug_mgs.html: {e}")
 
 def formato_mgs_msgs(data):
     msgs = []
