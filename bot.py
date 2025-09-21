@@ -303,6 +303,10 @@ async def guardar_estado_mgs(fecha, hash_):
     async with aiofiles.open(LAST_MGS_STATE_FILE, mode="w") as f:
         await f.write(json.dumps(data))
 
+def escape_markdown(text):
+    # Escapa los caracteres problemáticos de Telegram Markdown V1
+    return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', text)
+
 async def scrape_mgs_content():
     import unicodedata
     from bs4 import BeautifulSoup
@@ -345,17 +349,19 @@ async def scrape_mgs_content():
             if h3 and p:
                 cat_name = h3.get_text(strip=True)
                 cat_norm = normalize_categoria(cat_name)
-                titulos = [t.strip() for t in p.decode_contents().split("<br>")]
-                titulos = [BeautifulSoup(t, "html.parser").get_text(strip=True) for t in titulos if t.strip()]
-                titulos_filtrados = []
-                for t in titulos:
-                    t_l = t.lower()
-                    if any(omit in t_l for omit in OMITIR):
-                        continue
-                    if t not in titulos_filtrados and t != "":
-                        titulos_filtrados.append(t)
-                if titulos_filtrados:
-                    categorias[cat_norm] = titulos_filtrados
+                # Split por <br>, luego por \n, luego filtra vacíos
+                titulos_raw = p.decode_contents().split("<br>")
+                titulos = []
+                for t in titulos_raw:
+                    for subtitulo in BeautifulSoup(t, "html.parser").get_text(separator="\n").split("\n"):
+                        subtitulo = subtitulo.strip()
+                        t_l = subtitulo.lower()
+                        if not subtitulo or any(omit in t_l for omit in OMITIR):
+                            continue
+                        if subtitulo not in titulos:
+                            titulos.append(subtitulo)
+                if titulos:
+                    categorias[cat_norm] = titulos
                     clave_to_titulo[cat_norm] = cat_name
 
         # Busca y limpia la fecha de actualización
@@ -363,7 +369,6 @@ async def scrape_mgs_content():
         for tag in soup.find_all(['p', 'div', 'span', 'li']):
             txt = tag.get_text(strip=True)
             if "Actualización de contenido" in txt:
-                # Solo deja la parte de "Actualización de contenido" hasta el primer salto de línea o punto
                 fecha_actualizacion = txt.split("Todas las semanas")[0].strip()
                 fecha_actualizacion = fecha_actualizacion.split("hasta el")[0].strip() if "hasta el" in fecha_actualizacion else fecha_actualizacion
                 break
@@ -405,11 +410,11 @@ def formato_mgs_msgs(data):
         elif nombre_lower in ["cartoon/animado", "cartoon", "animado"]:
             header = f"{emoji} Cartoon/Animado:\n"
         else:
-            header = f"*{nombre}*\n"
+            header = f"*{escape_markdown(nombre)}*\n"
 
         bloque = header
         for item in items:
-            linea = f"• {item}\n"
+            linea = f"• {escape_markdown(item)}\n"
             if len(bloque) + len(linea) > max_chars:
                 msgs.append(bloque.rstrip())
                 bloque = header + linea
