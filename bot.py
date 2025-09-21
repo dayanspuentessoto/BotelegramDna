@@ -317,88 +317,12 @@ async def scrape_mgs_content():
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         await page.goto(URL_MGS, timeout=120000)
-        prev_height = 0
-        for _ in range(60):
-            await page.evaluate("window.scrollBy(0, window.innerHeight);")
-            await page.wait_for_timeout(700)
-            curr_height = await page.evaluate("document.body.scrollHeight")
-            if curr_height == prev_height:
-                break
-            prev_height = curr_height
+        # ... scroll ...
         html = await page.content()
         await browser.close()
-        soup = BeautifulSoup(html, "html.parser")
-
-        # Busca todos los headings de categoría (ej: Películas, Series, etc.)
-        categorias_claves = [
-            "películas", "series", "anime", "cartoon/animado", "cartoon", "animado"
-        ]
-        categorias_claves_normalizadas = [normalize_categoria(cat) for cat in categorias_claves]
-        categorias = {}
-        clave_to_titulo = {}
-
-        current_categoria = None
-
-        for tag in soup.find_all(['h1', 'h2', 'h3', 'h4', 'strong', 'b']):
-            cat_name = tag.get_text(strip=True)
-            cat_norm = normalize_categoria(cat_name)
-            if cat_norm in categorias_claves_normalizadas:
-                current_categoria = cat_norm
-                if current_categoria not in categorias:
-                    categorias[current_categoria] = []
-                    clave_to_titulo[current_categoria] = cat_name
-                # Busca los siguientes hermanos (siblings) hasta el próximo header
-                for sib in tag.find_next_siblings():
-                    if sib.name in ['h1', 'h2', 'h3', 'h4', 'strong', 'b']:
-                        break
-                    # Busca listas, párrafos y spans que contengan títulos
-                    text_items = []
-                    if sib.name in ['ul', 'ol']:
-                        text_items = [li.get_text(strip=True) for li in sib.find_all('li')]
-                    elif sib.name in ['p', 'span', 'div']:
-                        # Divide por saltos de línea si hay muchos títulos juntos
-                        text_items = [x.strip() for x in sib.get_text(separator="\n").split("\n") if x.strip()]
-                    if text_items:
-                        for item in text_items:
-                            if item and item not in categorias[current_categoria]:
-                                categorias[current_categoria].append(item)
-        # Como back-up, si no encontró nada, usa el método viejo (texto plano)
-        if not categorias:
-            # (mantén la versión anterior aquí como fallback)
-            soup = BeautifulSoup(html, "html.parser")
-            texto = soup.get_text("\n", strip=True)
-            lineas = texto.splitlines()
-            categoria_actual = None
-            for linea in lineas:
-                linea_strip = linea.strip()
-                if not linea_strip:
-                    continue
-                cat_norm = normalize_categoria(linea_strip)
-                if cat_norm in categorias_claves_normalizadas:
-                    categoria_actual = cat_norm
-                    if categoria_actual not in categorias:
-                        categorias[categoria_actual] = []
-                        clave_to_titulo[categoria_actual] = linea_strip
-                elif categoria_actual:
-                    if (
-                        not any(linea_strip.lower().startswith(cat) for cat in categorias_claves_normalizadas)
-                        and "todas las semanas tenemos contenido nuevo" not in linea_strip.lower()
-                        and linea_strip
-                    ):
-                        if linea_strip not in categorias[categoria_actual]:
-                            categorias[categoria_actual].append(linea_strip)
-        fecha_actualizacion = None
-        # Busca la fecha en toda la página
-        for tag in soup.find_all(['p', 'div', 'span', 'li']):
-            txt = tag.get_text(strip=True)
-            if "Actualización de contenido" in txt:
-                fecha_actualizacion = txt
-                break
-        return {
-            "fecha": fecha_actualizacion,
-            "categorias": {clave_to_titulo[k]: v for k, v in categorias.items()},
-            "html": html
-        }
+        # GUARDAR EL HTML
+        with open("debug_mgs.html", "w", encoding="utf-8") as f:
+            f.write(html)
 
 def formato_mgs_msgs(data):
     msgs = []
