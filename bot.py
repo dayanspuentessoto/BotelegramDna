@@ -285,6 +285,7 @@ async def enviar_eventos_diarios_job(context: ContextTypes.DEFAULT_TYPE):
     await enviar_eventos_diarios_core(context=context, update=None)
 
 # ----- MGS Estrenos -----
+
 async def hash_mgs_categorias(categorias):
     contenido = json.dumps(categorias, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(contenido.encode("utf-8")).hexdigest()
@@ -321,26 +322,39 @@ async def scrape_mgs_content():
         texto = soup.get_text("\n", strip=True)
         lineas = texto.splitlines()
 
+        # Categorías clave ajustadas y en minúsculas para comparación robusta
+        categorias_claves = [
+            "películas", "series", "anime", "cartoon/animado", "cartoon", "animado"
+        ]
+        categorias_claves_lower = [cat.lower() for cat in categorias_claves]
+
         categorias = {}
         categoria_actual = None
-        fecha_actualizacion = None
-        categorias_claves = ["Películas", "Series", "Anime", "Cartoon/Animado", "Cartoon", "Animado"]
 
-        for idx, linea in enumerate(lineas):
-            linea = linea.strip()
-            if not linea:
+        # Agrupador robusto: lee todo entre cabeceras
+        for linea in lineas:
+            linea_strip = linea.strip()
+            if not linea_strip:
                 continue
+            # Detectar cabecera
+            if linea_strip.lower() in categorias_claves_lower:
+                categoria_actual = linea_strip
+                categorias[categoria_actual] = []
+            elif categoria_actual:
+                # Si no es cabecera, agrega al array actual
+                # Filtrar frases irrelevantes como la de "Todas las semanas tenemos contenido nuevo"
+                if (
+                    not any(linea_strip.lower().startswith(cat) for cat in categorias_claves_lower) and
+                    "todas las semanas tenemos contenido nuevo" not in linea_strip.lower() and
+                    linea_strip
+                ):
+                    categorias[categoria_actual].append(linea_strip)
+        # Buscar la fecha de actualización
+        fecha_actualizacion = None
+        for linea in lineas:
             if not fecha_actualizacion and "Actualización de contenido" in linea:
                 fecha_actualizacion = linea
-            if any(linea.lower().startswith(cat.lower()) for cat in categorias_claves):
-                categoria_actual = linea.split(":")[0].strip()
-                if categoria_actual.lower().startswith("cartoon/animado"):
-                    categoria_actual = "Cartoon/Animado"
-                categorias[categoria_actual] = []
-                continue
-            if categoria_actual and not any(linea.lower().startswith(cat.lower()) for cat in categorias_claves):
-                if linea and not linea.lower().startswith("todas las semanas tenemos contenido nuevo"):
-                    categorias[categoria_actual].append(linea)
+                break
         return {
             "fecha": fecha_actualizacion,
             "categorias": categorias,
@@ -354,18 +368,34 @@ def formato_mgs_msgs(data):
         "Impulsado por Lynkbe.com",
         "Scroll al inicio"
     ]
+    # Asignar emojis según categoría
+    emojis = {
+        "películas": "🎬",
+        "series": "📺",
+        "anime": "🧑‍🎤",
+        "cartoon/animado": "🦸",
+        "cartoon": "🦸",
+        "animado": "🦸"
+    }
     for nombre, items in data.get("categorias", {}).items():
+        nombre_lower = nombre.lower()
         items_filtrados = [
             item for item in items
             if not any(filtro.lower() in item.lower() for filtro in FILTROS)
             and item.strip() != ""
         ]
         if items_filtrados:
-            msg = f"🎬 *{nombre}:*\n" if nombre.lower().startswith("película") else \
-                  f"📺 *{nombre}:*\n" if nombre.lower().startswith("serie") else \
-                  f"🧑‍🎤 *{nombre}:*\n" if nombre.lower().startswith("anime") else \
-                  f"🦸 *{nombre}:*\n" if nombre.lower().startswith("cartoon") or nombre.lower().startswith("animado") else \
-                  f"*{nombre}:*\n"
+            emoji = emojis.get(nombre_lower, "")
+            if nombre_lower == "películas":
+                msg = f"{emoji} Películas:\n"
+            elif nombre_lower == "series":
+                msg = f"{emoji} Series:\n"
+            elif nombre_lower == "anime":
+                msg = f"{emoji} Anime:\n"
+            elif nombre_lower in ["cartoon/animado", "cartoon", "animado"]:
+                msg = f"{emoji} Cartoon/Animado:\n"
+            else:
+                msg = f"*{nombre}*\n"
             msg += "\n".join(f"• {item}" for item in items_filtrados)
             msgs.append(msg)
     return msgs
