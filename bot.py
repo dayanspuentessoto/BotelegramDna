@@ -377,6 +377,8 @@ def formato_mgs_msgs(data):
         "cartoon": "🦸",
         "animado": "🦸"
     }
+    max_chars = 3900  # Un poco menos de 4000 por seguridad Markdown
+
     for nombre, items in data.get("categorias", {}).items():
         nombre_lower = nombre.lower()
         items_filtrados = [
@@ -384,20 +386,31 @@ def formato_mgs_msgs(data):
             if not any(filtro.lower() in item.lower() for filtro in FILTROS)
             and item.strip() != ""
         ]
-        if items_filtrados:
-            emoji = emojis.get(nombre_lower, "")
-            if nombre_lower == "películas":
-                msg = f"{emoji} Películas:\n"
-            elif nombre_lower == "series":
-                msg = f"{emoji} Series:\n"
-            elif nombre_lower == "anime":
-                msg = f"{emoji} Anime:\n"
-            elif nombre_lower in ["cartoon/animado", "cartoon", "animado"]:
-                msg = f"{emoji} Cartoon/Animado:\n"
+        if not items_filtrados:
+            continue
+        emoji = emojis.get(nombre_lower, "")
+        if nombre_lower == "películas":
+            header = f"{emoji} Películas:\n"
+        elif nombre_lower == "series":
+            header = f"{emoji} Series:\n"
+        elif nombre_lower == "anime":
+            header = f"{emoji} Anime:\n"
+        elif nombre_lower in ["cartoon/animado", "cartoon", "animado"]:
+            header = f"{emoji} Cartoon/Animado:\n"
+        else:
+            header = f"*{nombre}*\n"
+
+        # Agrupa en bloques de máximo 3900 caracteres
+        bloque = header
+        for item in items_filtrados:
+            linea = f"• {item}\n"
+            if len(bloque) + len(linea) > max_chars:
+                msgs.append(bloque.rstrip())
+                bloque = header + linea
             else:
-                msg = f"*{nombre}*\n"
-            msg += "\n".join(f"• {item}" for item in items_filtrados)
-            msgs.append(msg)
+                bloque += linea
+        if bloque.strip() != header.strip():
+            msgs.append(bloque.rstrip())
     return msgs
 
 async def pelis_core(context: ContextTypes.DEFAULT_TYPE, update: Update = None):
