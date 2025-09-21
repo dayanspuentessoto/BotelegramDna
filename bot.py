@@ -339,7 +339,9 @@ async def scrape_mgs_content():
             # Detectar cabecera
             if linea_strip.lower() in categorias_claves_lower:
                 categoria_actual = linea_strip
-                categorias[categoria_actual] = []
+                # No sobrescribas si ya existe la categoría
+                if categoria_actual not in categorias:
+                    categorias[categoria_actual] = []
             elif categoria_actual:
                 # Si no es cabecera, agrega al array actual
                 # Filtrar frases irrelevantes como la de "Todas las semanas tenemos contenido nuevo"
@@ -348,7 +350,9 @@ async def scrape_mgs_content():
                     "todas las semanas tenemos contenido nuevo" not in linea_strip.lower() and
                     linea_strip
                 ):
-                    categorias[categoria_actual].append(linea_strip)
+                    # Evita duplicados
+                    if linea_strip not in categorias[categoria_actual]:
+                        categorias[categoria_actual].append(linea_strip)
         # Buscar la fecha de actualización
         fecha_actualizacion = None
         for linea in lineas:
