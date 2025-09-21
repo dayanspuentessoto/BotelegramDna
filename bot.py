@@ -313,6 +313,7 @@ def normalize_categoria(nombre):
 
 async def scrape_mgs_content():
     import unicodedata
+    from bs4 import BeautifulSoup
 
     def normalize_categoria(nombre):
         nombre = nombre.lower().strip()
@@ -337,60 +338,42 @@ async def scrape_mgs_content():
         html = await page.content()
         await browser.close()
 
-        # OPCIONAL: guardar HTML de debug para Railway
+        # OPCIONAL: guardar HTML para debug
         try:
             with open("debug_mgs.html", "w", encoding="utf-8") as f:
                 f.write(html)
-            # Si quieres recibirlo por Telegram, descomenta:
-            # await context.bot.send_document(chat_id=ADMIN_ID, document=open("debug_mgs.html", "rb"), filename="debug_mgs.html")
         except Exception as e:
             print(f"Error guardando debug_mgs.html: {e}")
 
         soup = BeautifulSoup(html, "html.parser")
-        texto = soup.get_text("\n", strip=True)
-        lineas = texto.splitlines()
+        categorias = {}
+        clave_to_titulo = {}
 
-        categorias_claves = [
-            "películas", "series", "anime", "cartoon/animado", "cartoon", "animado"
-        ]
-        categorias_claves_normalizadas = [normalize_categoria(cat) for cat in categorias_claves]
-
-        categorias = {}   # clave normalizada -> [items]
-        clave_to_titulo = {}  # clave normalizada -> display name original
-        categoria_actual = None
-
-        for linea in lineas:
-            linea_strip = linea.strip()
-            if not linea_strip:
-                continue
-            cat_norm = normalize_categoria(linea_strip)
-            if cat_norm in categorias_claves_normalizadas:
-                categoria_actual = cat_norm
-                if categoria_actual not in categorias:
-                    categorias[categoria_actual] = []
-                    clave_to_titulo[categoria_actual] = linea_strip
-                continue  # No agregar la cabecera como título
-            # Ignorar frases irrelevantes
-            if (
-                "todas las semanas tenemos contenido nuevo" in linea_strip.lower()
-                or "estrenos y material resubido en nuestra app" in linea_strip.lower()
-                or "¡disfrútalo!" in linea_strip.lower()
-            ):
-                continue
-            if categoria_actual:
-                # Solo agrega si no es otra cabecera ni vacía ni irrelevante
-                if (
-                    not any(linea_strip.lower() == cat for cat in categorias_claves_normalizadas)
-                    and linea_strip
-                ):
-                    if linea_strip not in categorias[categoria_actual]:
-                        categorias[categoria_actual].append(linea_strip)
+        for bloque in soup.find_all("div", class_="uagb-ifb-content"):
+            h3 = bloque.find("h3", class_="uagb-ifb-title")
+            p = bloque.find("p", class_="uagb-ifb-desc")
+            if h3 and p:
+                cat_name = h3.get_text(strip=True)
+                cat_norm = normalize_categoria(cat_name)
+                titulos = [t.strip() for t in p.decode_contents().split("<br>")]
+                titulos = [BeautifulSoup(t, "html.parser").get_text(strip=True) for t in titulos if t.strip()]
+                # Filtra frases irrelevantes
+                titulos = [
+                    t for t in titulos
+                    if "todas las semanas tenemos contenido nuevo" not in t.lower()
+                    and "estrenos y material resubido en nuestra app" not in t.lower()
+                    and "¡disfrútalo!" not in t.lower()
+                ]
+                if titulos:
+                    categorias[cat_norm] = titulos
+                    clave_to_titulo[cat_norm] = cat_name
 
         # Busca la fecha de actualización (opcional)
         fecha_actualizacion = None
-        for linea in lineas:
-            if "Actualización de contenido" in linea:
-                fecha_actualizacion = linea.strip()
+        for tag in soup.find_all(['p', 'div', 'span', 'li']):
+            txt = tag.get_text(strip=True)
+            if "Actualización de contenido" in txt:
+                fecha_actualizacion = txt
                 break
 
         return {
