@@ -303,14 +303,6 @@ async def guardar_estado_mgs(fecha, hash_):
     async with aiofiles.open(LAST_MGS_STATE_FILE, mode="w") as f:
         await f.write(json.dumps(data))
 
-def normalize_categoria(nombre):
-    nombre = nombre.lower().strip()
-    nombre = ''.join(
-        c for c in unicodedata.normalize('NFD', nombre)
-        if unicodedata.category(c) != 'Mn'
-    )
-    return nombre
-
 async def scrape_mgs_content():
     import unicodedata
     from bs4 import BeautifulSoup
@@ -323,27 +315,25 @@ async def scrape_mgs_content():
         )
         return nombre
 
+    OMITIR = [
+        "todas las semanas tenemos contenido nuevo",
+        "estrenos y material resubido en nuestra app",
+        "¡disfrútalo!",
+        "hasta el ",
+        "todos los derechos ©",
+        "impulsado por lynkbe.com",
+        "scroll al inicio"
+    ]
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
         page = await browser.new_page()
         await page.goto(URL_MGS, timeout=120000)
-        prev_height = 0
         for _ in range(60):
             await page.evaluate("window.scrollBy(0, window.innerHeight);")
             await page.wait_for_timeout(700)
-            curr_height = await page.evaluate("document.body.scrollHeight")
-            if curr_height == prev_height:
-                break
-            prev_height = curr_height
         html = await page.content()
         await browser.close()
-
-        # OPCIONAL: guardar HTML para debug
-        try:
-            with open("debug_mgs.html", "w", encoding="utf-8") as f:
-                f.write(html)
-        except Exception as e:
-            print(f"Error guardando debug_mgs.html: {e}")
 
         soup = BeautifulSoup(html, "html.parser")
         categorias = {}
@@ -357,23 +347,25 @@ async def scrape_mgs_content():
                 cat_norm = normalize_categoria(cat_name)
                 titulos = [t.strip() for t in p.decode_contents().split("<br>")]
                 titulos = [BeautifulSoup(t, "html.parser").get_text(strip=True) for t in titulos if t.strip()]
-                # Filtra frases irrelevantes
-                titulos = [
-                    t for t in titulos
-                    if "todas las semanas tenemos contenido nuevo" not in t.lower()
-                    and "estrenos y material resubido en nuestra app" not in t.lower()
-                    and "¡disfrútalo!" not in t.lower()
-                ]
-                if titulos:
-                    categorias[cat_norm] = titulos
+                titulos_filtrados = []
+                for t in titulos:
+                    t_l = t.lower()
+                    if any(omit in t_l for omit in OMITIR):
+                        continue
+                    if t not in titulos_filtrados and t != "":
+                        titulos_filtrados.append(t)
+                if titulos_filtrados:
+                    categorias[cat_norm] = titulos_filtrados
                     clave_to_titulo[cat_norm] = cat_name
 
-        # Busca la fecha de actualización (opcional)
+        # Busca y limpia la fecha de actualización
         fecha_actualizacion = None
         for tag in soup.find_all(['p', 'div', 'span', 'li']):
             txt = tag.get_text(strip=True)
             if "Actualización de contenido" in txt:
-                fecha_actualizacion = txt
+                # Solo deja la parte de "Actualización de contenido" hasta el primer salto de línea o punto
+                fecha_actualizacion = txt.split("Todas las semanas")[0].strip()
+                fecha_actualizacion = fecha_actualizacion.split("hasta el")[0].strip() if "hasta el" in fecha_actualizacion else fecha_actualizacion
                 break
 
         return {
@@ -381,15 +373,8 @@ async def scrape_mgs_content():
             "categorias": {clave_to_titulo[k]: v for k, v in categorias.items()},
             "html": html
         }
-        
+
 def formato_mgs_msgs(data):
-    msgs = []
-    FILTROS = [
-        "Todos los derechos",
-        "Impulsado por Lynkbe.com",
-        "Scroll al inicio"
-    ]
-    # Asignar emojis según categoría
     emojis = {
         "películas": "🎬",
         "series": "📺",
@@ -398,19 +383,20 @@ def formato_mgs_msgs(data):
         "cartoon": "🦸",
         "animado": "🦸"
     }
-    max_chars = 3900  # Un poco menos de 4000 por seguridad Markdown
+    max_chars = 3900
+    categorias_orden = ["películas", "series", "anime", "cartoon/animado", "cartoon", "animado"]
 
-    for nombre, items in data.get("categorias", {}).items():
-        nombre_lower = nombre.lower()
-        items_filtrados = [
-            item for item in items
-            if not any(filtro.lower() in item.lower() for filtro in FILTROS)
-            and item.strip() != ""
-        ]
-        if not items_filtrados:
-            continue
+    def normaliza(nombre):
+        return nombre.lower().replace("í", "i").replace("á", "a").replace("é", "e").replace("ó", "o").replace("ú", "u")
+
+    cats = list(data.get("categorias", {}).items())
+    cats.sort(key=lambda x: categorias_orden.index(normaliza(x[0])) if normaliza(x[0]) in categorias_orden else 999)
+
+    msgs = []
+    for nombre, items in cats:
+        nombre_lower = normaliza(nombre)
         emoji = emojis.get(nombre_lower, "")
-        if nombre_lower == "películas":
+        if nombre_lower == "peliculas":
             header = f"{emoji} Películas:\n"
         elif nombre_lower == "series":
             header = f"{emoji} Series:\n"
@@ -421,9 +407,8 @@ def formato_mgs_msgs(data):
         else:
             header = f"*{nombre}*\n"
 
-        # Agrupa en bloques de máximo 3900 caracteres
         bloque = header
-        for item in items_filtrados:
+        for item in items:
             linea = f"• {item}\n"
             if len(bloque) + len(linea) > max_chars:
                 msgs.append(bloque.rstrip())
@@ -460,14 +445,17 @@ async def pelis_core(context: ContextTypes.DEFAULT_TYPE, update: Update = None):
             if update:
                 await send_long_message(context.bot, update.effective_chat.id, "No hay contenido disponible.", parse_mode="Markdown")
             return
-        fecha_txt = f"*{fecha_actual}*"
-        pelis_guardadas = [fecha_txt] + msgs
+        # Solo la parte limpia de la fecha
+        fecha_txt = f"*{fecha_actual}*" if fecha_actual else ""
+        pelis_guardadas = ([fecha_txt] if fecha_txt else []) + msgs
         if update:
-            await send_long_message(context.bot, update.effective_chat.id, fecha_txt, parse_mode="Markdown")
+            if fecha_txt:
+                await send_long_message(context.bot, update.effective_chat.id, fecha_txt, parse_mode="Markdown")
             for msg in msgs:
                 await send_long_message(context.bot, update.effective_chat.id, msg, parse_mode="Markdown")
         else:
-            await send_long_message(context.bot, MGS_GROUP_ID, fecha_txt, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
+            if fecha_txt:
+                await send_long_message(context.bot, MGS_GROUP_ID, fecha_txt, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
             for msg in msgs:
                 await send_long_message(context.bot, MGS_GROUP_ID, msg, parse_mode="Markdown", thread_id=MGS_THREAD_ID)
         await guardar_estado_mgs(fecha_actual, hash_actual)
@@ -475,7 +463,7 @@ async def pelis_core(context: ContextTypes.DEFAULT_TYPE, update: Update = None):
         logging.error(f"Error en pelis_core: {e}")
         if update:
             await send_long_message(context.bot, update.effective_chat.id, f"Error: {e}", parse_mode="Markdown")
-
+            
 @safe_command
 async def pelis_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await pelis_core(context=context, update=update)
