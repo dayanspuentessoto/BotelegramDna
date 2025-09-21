@@ -7,6 +7,7 @@ import pytz
 import aiofiles
 import hashlib
 import asyncio
+import unicodedata
 from collections import OrderedDict
 
 from playwright.async_api import async_playwright
@@ -303,6 +304,15 @@ async def guardar_estado_mgs(fecha, hash_):
     async with aiofiles.open(LAST_MGS_STATE_FILE, mode="w") as f:
         await f.write(json.dumps(data))
 
+def normalize_categoria(nombre):
+    # Minuscula, sin tildes, sin espacios
+    nombre = nombre.lower().strip()
+    nombre = ''.join(
+        c for c in unicodedata.normalize('NFD', nombre)
+        if unicodedata.category(c) != 'Mn'
+    )
+    return nombre
+
 async def scrape_mgs_content():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -322,49 +332,45 @@ async def scrape_mgs_content():
         texto = soup.get_text("\n", strip=True)
         lineas = texto.splitlines()
 
-        # Categorías clave ajustadas y en minúsculas para comparación robusta
         categorias_claves = [
             "películas", "series", "anime", "cartoon/animado", "cartoon", "animado"
         ]
-        categorias_claves_lower = [cat.lower() for cat in categorias_claves]
+        categorias_claves_normalizadas = [normalize_categoria(cat) for cat in categorias_claves]
 
-        categorias = {}
+        categorias = {}  # clave normalizada -> [items]
+        clave_to_titulo = {}  # clave normalizada -> nombre original (para formateo)
         categoria_actual = None
 
-        # Agrupador robusto: lee todo entre cabeceras
         for linea in lineas:
             linea_strip = linea.strip()
             if not linea_strip:
                 continue
-            # Detectar cabecera
-            if linea_strip.lower() in categorias_claves_lower:
-                categoria_actual = linea_strip
-                # No sobrescribas si ya existe la categoría
+            cat_norm = normalize_categoria(linea_strip)
+            if cat_norm in categorias_claves_normalizadas:
+                categoria_actual = cat_norm
                 if categoria_actual not in categorias:
                     categorias[categoria_actual] = []
+                    clave_to_titulo[categoria_actual] = linea_strip  # guarda el display original
             elif categoria_actual:
-                # Si no es cabecera, agrega al array actual
-                # Filtrar frases irrelevantes como la de "Todas las semanas tenemos contenido nuevo"
+                # Evita frases irrelevantes y duplicados
                 if (
-                    not any(linea_strip.lower().startswith(cat) for cat in categorias_claves_lower) and
-                    "todas las semanas tenemos contenido nuevo" not in linea_strip.lower() and
-                    linea_strip
+                    not any(linea_strip.lower().startswith(cat) for cat in categorias_claves_normalizadas)
+                    and "todas las semanas tenemos contenido nuevo" not in linea_strip.lower()
+                    and linea_strip
                 ):
-                    # Evita duplicados
                     if linea_strip not in categorias[categoria_actual]:
                         categorias[categoria_actual].append(linea_strip)
-        # Buscar la fecha de actualización
         fecha_actualizacion = None
         for linea in lineas:
             if not fecha_actualizacion and "Actualización de contenido" in linea:
                 fecha_actualizacion = linea
                 break
+        # Devuelve los nombres de categoria como los títulos originales, pero las listas SIN duplicados ni cortes
         return {
             "fecha": fecha_actualizacion,
-            "categorias": categorias,
+            "categorias": {clave_to_titulo[k]: v for k, v in categorias.items()},
             "html": html
         }
-
 def formato_mgs_msgs(data):
     msgs = []
     FILTROS = [
