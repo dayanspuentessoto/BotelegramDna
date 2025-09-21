@@ -337,85 +337,68 @@ async def scrape_mgs_content():
         html = await page.content()
         await browser.close()
 
-        # Envía el HTML por Telegram al admin (Railway no garantiza archivos locales)
+        # OPCIONAL: guardar HTML de debug para Railway
         try:
             with open("debug_mgs.html", "w", encoding="utf-8") as f:
                 f.write(html)
-            # Si tienes context y bot, descomenta la siguiente línea:
+            # Si quieres recibirlo por Telegram, descomenta:
             # await context.bot.send_document(chat_id=ADMIN_ID, document=open("debug_mgs.html", "rb"), filename="debug_mgs.html")
         except Exception as e:
-            print(f"Error guardando o enviando debug_mgs.html: {e}")
+            print(f"Error guardando debug_mgs.html: {e}")
 
         soup = BeautifulSoup(html, "html.parser")
+        texto = soup.get_text("\n", strip=True)
+        lineas = texto.splitlines()
 
         categorias_claves = [
             "películas", "series", "anime", "cartoon/animado", "cartoon", "animado"
         ]
         categorias_claves_normalizadas = [normalize_categoria(cat) for cat in categorias_claves]
-        categorias = {}
-        clave_to_titulo = {}
 
-        # Recorrer todos los headers y capturar el contenido entre ellos
-        all_tags = soup.find_all(['h1', 'h2', 'h3', 'h4', 'strong', 'b'])
-        for idx, tag in enumerate(all_tags):
-            cat_name = tag.get_text(strip=True)
-            cat_norm = normalize_categoria(cat_name)
+        categorias = {}   # clave normalizada -> [items]
+        clave_to_titulo = {}  # clave normalizada -> display name original
+        categoria_actual = None
+
+        for linea in lineas:
+            linea_strip = linea.strip()
+            if not linea_strip:
+                continue
+            cat_norm = normalize_categoria(linea_strip)
             if cat_norm in categorias_claves_normalizadas:
-                if cat_norm not in categorias:
-                    categorias[cat_norm] = []
-                    clave_to_titulo[cat_norm] = cat_name
-                # Buscar los hermanos siguientes hasta el próximo header
-                for sib in tag.find_all_next():
-                    if sib == tag:
-                        continue
-                    if sib in all_tags:
-                        break
-                    # Solo extraer texto de nodos relevantes
-                    if sib.name in ['ul', 'ol']:
-                        for li in sib.find_all('li'):
-                            item = li.get_text(strip=True)
-                            if item and item not in categorias[cat_norm]:
-                                categorias[cat_norm].append(item)
-                    elif sib.name in ['p', 'span', 'div']:
-                        items = [x.strip() for x in sib.get_text(separator="\n").split("\n") if x.strip()]
-                        for item in items:
-                            if item and item not in categorias[cat_norm]:
-                                categorias[cat_norm].append(item)
-        # Backup: si no encontró nada, usa método viejo sobre el texto plano
-        if not categorias:
-            texto = soup.get_text("\n", strip=True)
-            lineas = texto.splitlines()
-            categoria_actual = None
-            for linea in lineas:
-                linea_strip = linea.strip()
-                if not linea_strip:
-                    continue
-                cat_norm = normalize_categoria(linea_strip)
-                if cat_norm in categorias_claves_normalizadas:
-                    categoria_actual = cat_norm
-                    if categoria_actual not in categorias:
-                        categorias[categoria_actual] = []
-                        clave_to_titulo[categoria_actual] = linea_strip
-                elif categoria_actual:
-                    if (
-                        not any(linea_strip.lower().startswith(cat) for cat in categorias_claves_normalizadas)
-                        and "todas las semanas tenemos contenido nuevo" not in linea_strip.lower()
-                        and linea_strip
-                    ):
-                        if linea_strip not in categorias[categoria_actual]:
-                            categorias[categoria_actual].append(linea_strip)
+                categoria_actual = cat_norm
+                if categoria_actual not in categorias:
+                    categorias[categoria_actual] = []
+                    clave_to_titulo[categoria_actual] = linea_strip
+                continue  # No agregar la cabecera como título
+            # Ignorar frases irrelevantes
+            if (
+                "todas las semanas tenemos contenido nuevo" in linea_strip.lower()
+                or "estrenos y material resubido en nuestra app" in linea_strip.lower()
+                or "¡disfrútalo!" in linea_strip.lower()
+            ):
+                continue
+            if categoria_actual:
+                # Solo agrega si no es otra cabecera ni vacía ni irrelevante
+                if (
+                    not any(linea_strip.lower() == cat for cat in categorias_claves_normalizadas)
+                    and linea_strip
+                ):
+                    if linea_strip not in categorias[categoria_actual]:
+                        categorias[categoria_actual].append(linea_strip)
 
+        # Busca la fecha de actualización (opcional)
         fecha_actualizacion = None
-        for tag in soup.find_all(['p', 'div', 'span', 'li']):
-            txt = tag.get_text(strip=True)
-            if "Actualización de contenido" in txt:
-                fecha_actualizacion = txt
+        for linea in lineas:
+            if "Actualización de contenido" in linea:
+                fecha_actualizacion = linea.strip()
                 break
+
         return {
             "fecha": fecha_actualizacion,
             "categorias": {clave_to_titulo[k]: v for k, v in categorias.items()},
             "html": html
         }
+        
 def formato_mgs_msgs(data):
     msgs = []
     FILTROS = [
