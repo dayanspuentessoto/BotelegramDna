@@ -513,6 +513,10 @@ def es_footer_espn(linea: str) -> bool:
             return True
     return False
 
+def escape_markdown(text):
+    # Escapa los caracteres problemáticos de Telegram Markdown V1
+    return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', text)
+
 def formatear_cartelera_telegram(texto, fecha_formato=None):
     lineas = texto.strip().split("\n")
     primer_linea = lineas[0]
@@ -564,14 +568,14 @@ def formatear_cartelera_telegram(texto, fecha_formato=None):
             grupos[key] = []
         canal_final = canal if canal else ""
         grupos[key].append((hora, descripcion, canal_final))
-    mensaje = f"⚽ Cartelera de Partidos Televisados - {fecha_formato}\n"
+    mensaje = f"⚽ Cartelera de Partidos Televisados - {escape_markdown(fecha_formato)}\n"
     for competencia, eventos in grupos.items():
-        mensaje += f"\n🏆 {competencia}\n"
+        mensaje += f"\n🏆 {escape_markdown(competencia)}\n"
         for hora, descripcion, canal in eventos:
-            canal_str = f" | {canal}" if canal else ""
-            mensaje += f"• {hora} | {descripcion}{canal_str}\n"
+            canal_str = f" | {escape_markdown(canal)}" if canal else ""
+            mensaje += f"• {escape_markdown(hora)} | {escape_markdown(descripcion)}{canal_str}\n"
     return mensaje.strip()
-
+    
 def extraer_ultima_fecha_agenda(mensajes_por_dia):
     fecha_re = re.compile(r"(Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)\s+(\d{1,2})", re.IGNORECASE)
     dias = []
