@@ -45,6 +45,8 @@ cartelera_diaria_guardada = []
 ultima_agenda_disney = []
 pelis_guardadas = []
 
+mensajes_privados_usuario = {}  # <--- contador para mensajes privados
+
 def cargar_horarios():
     global MODO_NOCHE_HORA, MODO_NOCHE_MINUTO, MODO_DIA_HORA, MODO_DIA_MINUTO
     try:
@@ -84,6 +86,15 @@ def safe_command(func):
                 except Exception:
                     pass
     return wrapper
+
+# NUEVO: función para verificar si un usuario es admin
+async def es_admin(context, user_id):
+    try:
+        chat_admins = await context.bot.get_chat_administrators(GENERAL_CHAT_ID)
+        admin_ids = [admin.user.id for admin in chat_admins]
+        return user_id in admin_ids
+    except Exception:
+        return False
 
 def dias_a_mostrar():
     hoy = datetime.datetime.now(TZ).date()
@@ -891,8 +902,10 @@ async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = (
         "👋 ¡Hola! Tu mensaje ha sido recibido.\n"
         "El administrador se comunicará contigo pronto.\n\n"
-        "Mientras esperas, revisa la sección SOPORTE DECOS que está dentro de este grupo D.N.A. TV.\n"
-        "Si tienes otra pregunta, escríbela aquí. ¡Gracias!"
+        "Mientras esperas, revisa la sección [SOPORTE DECOS](https://t.me/c/2421748184/41) que está dentro de este grupo D.N.A. TV.\n"
+        "Si tienes otra pregunta, escríbela aquí. ¡Gracias!\n\n"
+        "recuerda que la aplicacion magis es \"gratuita\", por lo que no se puede controlar la caida o estabilidad de canales, como asi mismo los canales que eliminen.\n"
+        "siempre puedes informarte por la aplicacion de pago que es la más estable."
     )
     user_id = update.effective_user.id
     now = datetime.datetime.now().timestamp()
@@ -900,8 +913,21 @@ async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if now - last_time < AYUDA_RATE_LIMIT_SECONDS:
         return
     ayuda_last_sent[user_id] = now
+
+    # Restringe a los no admin por 5 minutos tras usar /ayuda
+    if not await es_admin(context, user_id):
+        try:
+            await context.bot.restrict_chat_member(
+                GENERAL_CHAT_ID,
+                user_id,
+                permissions=ChatPermissions(can_send_messages=False),
+                until_date=int(now) + 300
+            )
+        except Exception as e:
+            logging.warning(f"No se pudo restringir a usuario {user_id} tras /ayuda: {e}")
+
     if update.effective_chat.type == "private":
-        await update.message.reply_text(texto)
+        await update.message.reply_text(texto, parse_mode="Markdown")
     else:
         await send_long_message(context.bot, GENERAL_CHAT_ID, texto, thread_id=GENERAL_THREAD_ID)
 
@@ -975,8 +1001,25 @@ def obtener_saludo():
 
 @safe_command
 async def respuesta_privada(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global mensajes_privados_usuario
     saludo = obtener_saludo()
     user = update.effective_user
+    user_id = user.id
+    mensajes_privados_usuario[user_id] = mensajes_privados_usuario.get(user_id, 0) + 1
+
+    # Si es el tercer mensaje y no es admin, restringe por 5 minutos
+    if mensajes_privados_usuario[user_id] == 3 and not await es_admin(context, user_id):
+        try:
+            now = datetime.datetime.now().timestamp()
+            await context.bot.restrict_chat_member(
+                GENERAL_CHAT_ID,
+                user_id,
+                permissions=ChatPermissions(can_send_messages=False),
+                until_date=int(now) + 300
+            )
+        except Exception as e:
+            logging.warning(f"No se pudo restringir a usuario {user_id} tras 3er mensaje privado: {e}")
+
     texto_usuario = update.message.text if update.message else ""
     nombre = f"{user.first_name or ''} {user.last_name or ''}".strip() or user.username or str(user.id)
     aviso = (
@@ -997,6 +1040,10 @@ async def respuesta_privada(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @safe_command
 async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_member = getattr(update, "chat_member", None)
+    mensaje_extra = (
+        "RECUERDA QUE LA APLICACION MAGIS ES \"GRATUITA\", POR LO QUE NO SE PUEDE CONTROLAR LA CAIDA O ESTABILIDAD DE CANALES, COMO ASI MISMO LOS CANALES QUE ELIMINEN. \n"
+        "SIEMPRE PUEDES INFORMARTE POR LA APLICACION DE PAGO QUE ES LA MÁS ESTABLE."
+    )
     if chat_member and getattr(chat_member, "new_chat_members", None):
         for member in chat_member.new_chat_members:
             nombre = member.first_name if member.first_name else ""
@@ -1004,10 +1051,14 @@ async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
             nombre_completo = f"{nombre} {apellidos}".strip()
             if not nombre_completo:
                 nombre_completo = member.username if member.username else "Usuario"
+            mensaje_bienvenida = (
+                f"{nombre_completo} BIENVENIDO(A) A NUESTRO SELECTO GRUPO D.N.A. TV, MANTENTE SIEMPRE AL DIA Y ACTUALIZADO, SI TIENES ALGUNA DUDA ESCRIBE EL COMANDO AYUDA PARA MAS INFO 😎🤖\n\n"
+                f"{mensaje_extra}"
+            )
             await send_long_message(
                 context.bot,
                 GENERAL_CHAT_ID,
-                f"{nombre_completo} BIENVENIDO(A) A NUESTRO SELECTO GRUPO D.N.A. TV, MANTENTE SIEMPRE AL DIA Y ACTUALIZADO, SI TIENES ALGUNA DUDA ESCRIBE EL COMANDO AYUDA PARA MAS INFO 😎🤖",
+                mensaje_bienvenida,
                 thread_id=GENERAL_THREAD_ID
             )
     elif hasattr(update, "message") and getattr(update.message, "new_chat_members", None):
@@ -1017,10 +1068,14 @@ async def bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
             nombre_completo = f"{nombre} {apellidos}".strip()
             if not nombre_completo:
                 nombre_completo = member.username if member.username else "Usuario"
+            mensaje_bienvenida = (
+                f"{nombre_completo} BIENVENIDO(A) A NUESTRO SELECTO GRUPO D.N.A. TV, MANTENTE SIEMPRE AL DIA Y ACTUALIZADO, SI TIENES ALGUNA DUDA ESCRIBE EL COMANDO AYUDA PARA MAS INFO 😎🤖\n\n"
+                f"{mensaje_extra}"
+            )
             await send_long_message(
                 context.bot,
                 GENERAL_CHAT_ID,
-                f"{nombre_completo} BIENVENIDO(A) A NUESTRO SELECTO GRUPO D.N.A. TV, MANTENTE SIEMPRE AL DIA Y ACTUALIZADO, SI TIENES ALGUNA DUDA ESCRIBE EL COMANDO AYUDA PARA MAS INFO 😎🤖",
+                mensaje_bienvenida,
                 thread_id=GENERAL_THREAD_ID
             )
 
